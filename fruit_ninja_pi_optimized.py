@@ -188,6 +188,10 @@ mediapipe_frame_counter = 0
 mediapipe_last_pos = None
 mediapipe_prev_pos = None
 
+# Convex hull position smoothing (to prevent jitter from resetting hover timers)
+convex_hull_positions = deque(maxlen=5)  # Average last 5 frames
+convex_hull_smoothed_pos = None
+
 class ScorePopup:
     """Floating score text that appears when fruit is sliced"""
     def __init__(self, x, y, points, is_combo=False):
@@ -580,7 +584,10 @@ def detect_fingertip_convex_hull(detection_frame):
     """
     ULTRA-FAST fingertip detection using convex hull (30+ FPS)
     Finds the topmost point of the hand - perfect for index finger pointing!
+    Includes position smoothing to prevent jitter.
     """
+    global convex_hull_positions, convex_hull_smoothed_pos
+
     hsv = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2HSV)
 
     # Skin mask (optimized range)
@@ -613,8 +620,22 @@ def detect_fingertip_convex_hull(detection_frame):
             display_x = int(fingertip_x * DISPLAY_WIDTH / DETECTION_WIDTH)
             display_y = int(fingertip_y * DISPLAY_HEIGHT / DETECTION_HEIGHT)
 
-            return (display_x, display_y), mask
+            # Add to smoothing buffer
+            convex_hull_positions.append((display_x, display_y))
 
+            # Calculate smoothed position (average of last 5 positions)
+            if len(convex_hull_positions) >= 3:  # Need at least 3 points for stability
+                avg_x = sum(p[0] for p in convex_hull_positions) // len(convex_hull_positions)
+                avg_y = sum(p[1] for p in convex_hull_positions) // len(convex_hull_positions)
+                convex_hull_smoothed_pos = (avg_x, avg_y)
+                return convex_hull_smoothed_pos, mask
+            else:
+                # Not enough points yet, return raw position
+                return (display_x, display_y), mask
+
+    # No hand detected - clear smoothing buffer
+    convex_hull_positions.clear()
+    convex_hull_smoothed_pos = None
     return None, mask
 
 def detect_hand_mediapipe(detection_frame, use_optimization=True):
@@ -1107,8 +1128,16 @@ def game_loop():
             # MENU STATE
             button_activated = draw_menu(frame, hand_pos, is_pinching)
 
-            # Draw pinch visual feedback for menu interaction (thumb only, ARM mode)
-            if delegate_enabled and thumb_pos:
+            # Draw hand cursor for visual feedback
+            if PERFORMANCE_MODE == "CONVEX_HULL" and hand_pos:
+                # Convex Hull mode: Large visible cursor (no pinch available)
+                cv2.circle(frame, hand_pos, 20, GREEN, 3)  # Outer ring
+                cv2.circle(frame, hand_pos, 8, WHITE, -1)  # Center dot
+                # Draw crosshair for precision
+                cv2.line(frame, (hand_pos[0] - 15, hand_pos[1]), (hand_pos[0] + 15, hand_pos[1]), GREEN, 2)
+                cv2.line(frame, (hand_pos[0], hand_pos[1] - 15), (hand_pos[0], hand_pos[1] + 15), GREEN, 2)
+            elif delegate_enabled and thumb_pos:
+                # MediaPipe mode: Show thumb for pinch detection
                 if is_pinching:
                     # Pinching: Blue outline with white fill (like a pressed button)
                     cv2.circle(frame, thumb_pos, 14, BLUE, 2)  # Outline
@@ -1284,8 +1313,15 @@ def game_loop():
             # PAUSED STATE
             button_activated = draw_pause_overlay(frame, hand_pos, is_pinching)
 
-            # Draw pinch visual feedback for pause menu interaction (thumb only, ARM mode)
-            if delegate_enabled and thumb_pos:
+            # Draw hand cursor for visual feedback
+            if PERFORMANCE_MODE == "CONVEX_HULL" and hand_pos:
+                # Convex Hull mode: Large visible cursor
+                cv2.circle(frame, hand_pos, 20, GREEN, 3)
+                cv2.circle(frame, hand_pos, 8, WHITE, -1)
+                cv2.line(frame, (hand_pos[0] - 15, hand_pos[1]), (hand_pos[0] + 15, hand_pos[1]), GREEN, 2)
+                cv2.line(frame, (hand_pos[0], hand_pos[1] - 15), (hand_pos[0], hand_pos[1] + 15), GREEN, 2)
+            elif delegate_enabled and thumb_pos:
+                # MediaPipe mode: Show thumb for pinch detection
                 if is_pinching:
                     # Pinching: Blue outline with white fill
                     cv2.circle(frame, thumb_pos, 14, BLUE, 2)
@@ -1313,8 +1349,15 @@ def game_loop():
             # GAME OVER STATE
             button_activated = draw_game_over(frame, hand_pos, is_pinching)
 
-            # Draw pinch visual feedback for game over menu interaction (thumb only, ARM mode)
-            if delegate_enabled and thumb_pos:
+            # Draw hand cursor for visual feedback
+            if PERFORMANCE_MODE == "CONVEX_HULL" and hand_pos:
+                # Convex Hull mode: Large visible cursor
+                cv2.circle(frame, hand_pos, 20, GREEN, 3)
+                cv2.circle(frame, hand_pos, 8, WHITE, -1)
+                cv2.line(frame, (hand_pos[0] - 15, hand_pos[1]), (hand_pos[0] + 15, hand_pos[1]), GREEN, 2)
+                cv2.line(frame, (hand_pos[0], hand_pos[1] - 15), (hand_pos[0], hand_pos[1] + 15), GREEN, 2)
+            elif delegate_enabled and thumb_pos:
+                # MediaPipe mode: Show thumb for pinch detection
                 if is_pinching:
                     # Pinching: Blue outline with white fill
                     cv2.circle(frame, thumb_pos, 14, BLUE, 2)
