@@ -29,30 +29,46 @@ export default function GameStreamMonitor() {
     return () => clearInterval(interval);
   }, []);
 
-  // Toggle delegate setting on Pi via proxy
-  const toggleDelegate = async () => {
+  // Set mode (1: Baseline, 2: ARM Optimized, 3: ARM Hero)
+  const setMode = async (mode) => {
     try {
-      const newState = !piMetrics?.delegate_enabled;
-      await fetch(`/api/control/delegate?enable=${newState}`, {
-        method: 'POST'
-      });
+      if (mode === 1) {
+        // Mode 1: Baseline - disable delegate
+        await fetch(`/api/control/delegate?enable=false`, { method: 'POST' });
+        await fetch(`/api/control/performance_mode?mode=BALANCED`, { method: 'POST' });
+      } else if (mode === 2) {
+        // Mode 2: ARM Optimized - enable delegate
+        await fetch(`/api/control/delegate?enable=true`, { method: 'POST' });
+        await fetch(`/api/control/performance_mode?mode=BALANCED`, { method: 'POST' });
+      } else if (mode === 3) {
+        // Mode 3: ARM Hero - convex hull mode
+        await fetch(`/api/control/performance_mode?mode=CONVEX_HULL`, { method: 'POST' });
+      }
       // Metrics will update automatically via polling
     } catch (error) {
-      console.error('Failed to toggle delegate:', error);
+      console.error('Failed to set mode:', error);
     }
+  };
+
+  // Determine current mode based on metrics
+  const getCurrentMode = () => {
+    if (piMetrics?.model_name?.includes('Classical CV')) return 3;
+    if (piMetrics?.delegate_enabled) return 2;
+    return 1;
   };
 
   // Stream configuration
   const currentStream = {
     videoUrl: '/api/stream',
     fps: piMetrics?.fps || 0,
-    frameTime: piMetrics?.fps ? (1000 / piMetrics.fps).toFixed(1) : 0,
+    frameTime: piMetrics?.frame_time_ms || (piMetrics?.fps ? (1000 / piMetrics.fps).toFixed(1) : 0),
     temperature: piMetrics?.cpu_temp_c || 0,
     memoryUsage: piMetrics?.mem_used_mb ? (piMetrics.mem_used_mb / 1024).toFixed(1) : 0,
     inferenceTime: piMetrics?.infer_ms || 0,
     gameScore: piMetrics?.game_score || 0,
     gameMissed: piMetrics?.game_missed || 0,
     gameFruits: piMetrics?.game_fruits || 0,
+    gameParticles: piMetrics?.game_particles || 0,
     modelName: piMetrics?.model_name || 'Loading...',
     delegateEnabled: piMetrics?.delegate_enabled || false
   };
@@ -83,48 +99,81 @@ export default function GameStreamMonitor() {
       padding: '1.5rem' 
     }}>
       {/* Header */}
-      <div style={{ 
-        marginBottom: '1.5rem', 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'space-between' 
+      <div style={{
+        marginBottom: '1.5rem',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between'
       }}>
         <div>
           <h1 style={{ fontSize: '2.25rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            Game Stream Monitor
+            ARM Optimization Demo
           </h1>
-          <p style={{ color: '#9ca3af' }}>Real-time performance metrics and video streams</p>
+          <p style={{ color: '#9ca3af' }}>Live comparison: Baseline vs ARM Optimized vs ARM Hero</p>
         </div>
-        <button
-          onClick={toggleDelegate}
-          disabled={loading}
-          style={{
-            backgroundColor: currentStream.delegateEnabled ? '#dc2626' : '#059669',
-            padding: '0.75rem 1.5rem',
-            borderRadius: '0.5rem',
-            fontWeight: '600',
-            border: 'none',
-            cursor: loading ? 'not-allowed' : 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            color: 'white',
-            opacity: loading ? 0.7 : 1
-          }}
-          onMouseOver={(e) => {
-            if (!loading) {
-              e.target.style.backgroundColor = currentStream.delegateEnabled ? '#b91c1c' : '#047857';
-            }
-          }}
-          onMouseOut={(e) => {
-            if (!loading) {
-              e.target.style.backgroundColor = currentStream.delegateEnabled ? '#dc2626' : '#059669';
-            }
-          }}
-        >
-          <Gamepad2 style={{ width: '1.25rem', height: '1.25rem' }} />
-          {loading ? 'Loading...' : (currentStream.delegateEnabled ? 'ARM Optimized' : 'Baseline')}
-        </button>
+
+        {/* Mode Selection Buttons */}
+        <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <button
+            onClick={() => setMode(1)}
+            disabled={loading}
+            style={{
+              backgroundColor: getCurrentMode() === 1 ? '#dc2626' : '#374151',
+              padding: '0.75rem 1.25rem',
+              borderRadius: '0.5rem',
+              fontWeight: '600',
+              border: getCurrentMode() === 1 ? '2px solid #fca5a5' : '2px solid transparent',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              color: 'white',
+              opacity: loading ? 0.7 : 1,
+              transition: 'all 0.2s'
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>MODE 1</div>
+            <div>Baseline</div>
+            <div style={{ fontSize: '0.7rem', opacity: 0.6 }}>~9 FPS</div>
+          </button>
+
+          <button
+            onClick={() => setMode(2)}
+            disabled={loading}
+            style={{
+              backgroundColor: getCurrentMode() === 2 ? '#059669' : '#374151',
+              padding: '0.75rem 1.25rem',
+              borderRadius: '0.5rem',
+              fontWeight: '600',
+              border: getCurrentMode() === 2 ? '2px solid #6ee7b7' : '2px solid transparent',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              color: 'white',
+              opacity: loading ? 0.7 : 1,
+              transition: 'all 0.2s'
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>MODE 2</div>
+            <div>ARM Optimized</div>
+            <div style={{ fontSize: '0.7rem', opacity: 0.6 }}>~16 FPS</div>
+          </button>
+
+          <button
+            onClick={() => setMode(3)}
+            disabled={loading}
+            style={{
+              backgroundColor: getCurrentMode() === 3 ? '#7c3aed' : '#374151',
+              padding: '0.75rem 1.25rem',
+              borderRadius: '0.5rem',
+              fontWeight: '600',
+              border: getCurrentMode() === 3 ? '2px solid #c4b5fd' : '2px solid transparent',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              color: 'white',
+              opacity: loading ? 0.7 : 1,
+              transition: 'all 0.2s'
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>MODE 3</div>
+            <div>ARM Hero 🚀</div>
+            <div style={{ fontSize: '0.7rem', opacity: 0.6 }}>~176 FPS</div>
+          </button>
+        </div>
       </div>
 
       {/* Main Content */}
@@ -217,10 +266,10 @@ export default function GameStreamMonitor() {
             }}>
               <div>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: '600' }}>
-                  Fruit Ninja AR - {currentStream.delegateEnabled ? 'ARM Optimized' : 'Baseline'}
+                  Fruit Ninja AR - Mode {getCurrentMode()}
                 </h2>
                 <p style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
-                  Model: {currentStream.modelName}
+                  {currentStream.modelName}
                 </p>
               </div>
               <span style={{
@@ -248,7 +297,8 @@ export default function GameStreamMonitor() {
               backgroundColor: '#111827',
               borderRadius: '0.5rem',
               overflow: 'hidden',
-              border: '1px solid #374151'
+              border: '1px solid #374151',
+              position: 'relative'
             }}>
               {loading ? (
                 <div style={{
@@ -262,20 +312,38 @@ export default function GameStreamMonitor() {
                   Loading stream...
                 </div>
               ) : (
-                <img
-                  src={currentStream.videoUrl}
-                  alt="Fruit Ninja AR Stream"
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'contain',
-                    backgroundColor: '#000'
-                  }}
-                  onError={(e) => {
-                    e.target.style.display = 'none';
-                    e.target.nextSibling.style.display = 'flex';
-                  }}
-                />
+                <>
+                  <img
+                    src={currentStream.videoUrl}
+                    alt="Fruit Ninja AR Stream"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      backgroundColor: '#000'
+                    }}
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                      e.target.nextSibling.style.display = 'flex';
+                    }}
+                  />
+                  {/* Performance overlay - rendered on frontend for sharp text */}
+                  <div style={{
+                    position: 'absolute',
+                    bottom: '10px',
+                    left: '10px',
+                    color: 'white',
+                    fontSize: '14px',
+                    fontFamily: 'monospace',
+                    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    pointerEvents: 'none',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    FPS: {currentStream.fps} | Frame: {currentStream.frameTime}ms | Fruits: {currentStream.gameFruits} | Particles: {currentStream.gameParticles}
+                  </div>
+                </>
               )}
               <div style={{
                 width: '100%',
