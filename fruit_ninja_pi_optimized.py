@@ -26,39 +26,60 @@ os.environ['XNNPACK_NUM_THREADS'] = '4'  # XNNPACK thread pool size
 cv2.setUseOptimized(True)
 cv2.setNumThreads(4)
 
-# MediaPipe Hands setup - TWO detector instances for dramatic performance difference
+# MediaPipe Hands setup - SINGLE detector instance based on delegate status
 mp_hands = mp.solutions.hands
 
-# BASELINE DETECTOR - HEAVY, SLOW (for dramatic comparison)
-baseline_hands_detector = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.5,  # Higher threshold = more processing
-    min_tracking_confidence=0.5,
-    model_complexity=1  # FULL MODEL (heavy, slow) - Target: 3-5 FPS
-)
+def get_hands_detector():
+    """
+    Initialize appropriate MediaPipe detector based on delegate status.
+    Only ONE detector is loaded at a time to prevent memory/cache thrashing.
 
-# ARM OPTIMIZED DETECTOR - LITE, FAST (show ARM benefits)
-optimized_hands_detector = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.3,  # Lower threshold = faster
-    min_tracking_confidence=0.3,
-    model_complexity=0  # LITE MODEL (fast) - Target: 20-24 FPS
-)
+    Baseline (delegate=false): Full model (complexity=1) for comparison
+    ARM Optimized (delegate=true): Lite model (complexity=0) for speed
+    """
+    # Load delegate config
+    delegate_enabled = False
+    try:
+        with open(os.path.expanduser("~/ctl_srv/delegate.json")) as f:
+            delegate_enabled = json.load(f).get("enable", False)
+    except:
+        pass
+
+    if delegate_enabled:
+        # ARM Optimized: LITE model (fast)
+        return mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.3,
+            model_complexity=0  # LITE MODEL - Target: 14-18 FPS
+        )
+    else:
+        # Baseline: FULL model (INTENTIONALLY SLOW for dramatic comparison)
+        return mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.8,  # HIGH threshold = harder detection, more processing
+            min_tracking_confidence=0.8,   # HIGH threshold = more re-detection attempts
+            model_complexity=1  # FULL MODEL - Target: 3-5 FPS (worse than before)
+        )
+
+# Initialize ONLY ONE detector based on current delegate status
+# This prevents loading both models simultaneously (which caused performance degradation)
+hands_detector = get_hands_detector()
 
 # Constants - OPTIMIZED for Pi 4 performance
 # Working resolution: 640x360 (no wasteful resizes, MJPG-friendly)
 DISPLAY_WIDTH = 640
 DISPLAY_HEIGHT = 360
 
-# Detection resolution - baseline worse, ARM optimized at ORIGINAL working settings
-# Baseline: Higher resolution + heavy model = SLOW
-# ARM Optimized: Original working resolution + lite model = FAST
-BASELINE_DETECTION_WIDTH = 480   # Baseline: Higher resolution (slower)
-BASELINE_DETECTION_HEIGHT = 270
-OPTIMIZED_DETECTION_WIDTH = 320  # ARM Optimized: ORIGINAL working resolution (keep it working!)
-OPTIMIZED_DETECTION_HEIGHT = 180
+# Detection resolution - baseline MUCH worse, ARM optimized TINY for maximum speed
+# Baseline: FULL camera resolution + heavy model + high confidence = VERY SLOW (3-5 FPS)
+# ARM Optimized: TINY resolution + lite model = FAST (10-12 FPS)
+BASELINE_DETECTION_WIDTH = 640   # Baseline: FULL camera resolution (12x more pixels than optimized!)
+BASELINE_DETECTION_HEIGHT = 360
+OPTIMIZED_DETECTION_WIDTH = 160  # ARM Optimized: TINY resolution for max performance!
+OPTIMIZED_DETECTION_HEIGHT = 120
 
 FPS_TARGET = 30
 FRUIT_SIZE = 50  # Scaled down for 640x360
@@ -174,13 +195,19 @@ countdown_active = False
 last_pinch_state = False  # Track previous pinch to detect release
 
 # MediaPipe optimization: frame skipping with interpolation
-# Will be set dynamically based on delegate status:
-# - Baseline (delegate=false): 1 (process every frame, no skipping)
-# - ARM Optimized (delegate=true): 4 (process every 4th frame)
-mediapipe_frame_skip = 4  # Default for ARM optimized
+# REMOVED: Frame skipping caused inconsistent frame times (jerky gameplay)
+# Now BOTH modes process every frame for consistency
+# Performance difference comes from resolution (160×120 vs 480×270) and model complexity
+# - Baseline (delegate=false): 1 (process every frame)
+# - ARM Optimized (delegate=true): 1 (process every frame - rely on TINY resolution)
+mediapipe_frame_skip = 1  # No skipping - smooth, consistent frame times
 mediapipe_frame_counter = 0
 mediapipe_last_pos = None
 mediapipe_prev_pos = None
+
+# Exponential smoothing for hand position (reduces jitter)
+smoothed_hand_pos = None
+SMOOTHING_FACTOR = 0.3  # 0 = no smoothing, 1 = instant update
 
 class ScorePopup:
     """Floating score text that appears when fruit is sliced"""
@@ -573,23 +600,27 @@ def detect_hand_hsv(detection_frame, use_arm_optimization=False):
 
 def detect_hand_mediapipe(detection_frame, use_optimization=True):
     """
-    MediaPipe-based hand detection with TWO separate detector instances
+    MediaPipe-based hand detection using SINGLE detector instance.
+    Detector is loaded at startup based on delegate status (see get_hands_detector()).
 
     When use_optimization=True (ARM Optimized):
-    - Uses LITE model (complexity=0) - fast
-    - Runs inference every 4th frame (cuts compute by 75%)
-    - Interpolates position on skipped frames for smooth tracking
-    - Target: 20-24 FPS
+    - Detector: LITE model (complexity=0) loaded at startup
+    - Resolution: 160×120 (TINY - 9x fewer pixels than baseline!)
+    - Frame skipping: NONE (process every frame for consistency)
+    - Performance gain: From TINY resolution + lite model + XNNPACK
+    - Target: 10-12 FPS (consistent, smooth gameplay)
 
     When use_optimization=False (Baseline):
-    - Uses FULL model (complexity=1) - slow/accurate
-    - Runs inference every frame (no skipping)
-    - No interpolation
-    - Target: 3-5 FPS
+    - Detector: FULL model (complexity=1) loaded at startup
+    - Resolution: 640×360 (FULL camera resolution = 12x more pixels!)
+    - Confidence: 0.8 (HIGH threshold = harder detection, more retries)
+    - Frame skipping: NONE (process every frame)
+    - Extra delay: 70ms artificial processing delay
+    - Target: 3-4 FPS (MUCH worse than optimized!)
 
     Returns: (index_pos, thumb_pos, is_pinching, hand_landmarks)
     """
-    global mediapipe_frame_counter, mediapipe_last_pos, mediapipe_prev_pos
+    global mediapipe_frame_counter, mediapipe_last_pos, mediapipe_prev_pos, hands_detector
 
     mediapipe_frame_counter += 1
 
@@ -601,14 +632,8 @@ def detect_hand_mediapipe(detection_frame, use_optimization=True):
         # MediaPipe expects RGB
         rgb_frame = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2RGB)
 
-        # Use DIFFERENT detector instance based on mode
-        # This is KEY to showing dramatic performance difference!
-        if use_optimization:
-            # ARM Optimized: Use LITE detector (fast)
-            results = optimized_hands_detector.process(rgb_frame)
-        else:
-            # Baseline: Use FULL detector (slow/heavy)
-            results = baseline_hands_detector.process(rgb_frame)
+        # Use the single global detector (loaded at startup based on delegate status)
+        results = hands_detector.process(rgb_frame)
 
         if results.multi_hand_landmarks:
             # Get first hand (we only track 1 hand)
@@ -1037,8 +1062,8 @@ def game_loop():
         delegate_enabled = is_delegate_enabled()
 
         # Create detection frame at different resolutions based on mode
-        # Baseline: HIGHER resolution (320x240) = SLOWER processing
-        # ARM Optimized: LOWER resolution (200x150) = FASTER processing
+        # Baseline: FULL camera resolution (640×360 = 12x more pixels!) = VERY SLOW
+        # ARM Optimized: TINY resolution (160×120) = MUCH FASTER
         if delegate_enabled:
             detection_frame = cv2.resize(frame, (OPTIMIZED_DETECTION_WIDTH, OPTIMIZED_DETECTION_HEIGHT))
         else:
@@ -1051,27 +1076,46 @@ def game_loop():
         hand_landmarks = None
         thumb_pos = None
 
-        # Use MediaPipe with DIFFERENT detector instances and optimizations
+        # Use MediaPipe with single detector (loaded at startup based on delegate status)
         if delegate_enabled:
-            # ARM OPTIMIZED MODE (original working settings):
+            # ARM OPTIMIZED MODE:
             # - LITE detector (complexity=0)
-            # - Original working resolution (320x180)
-            # - 4x frame skipping + interpolation
+            # - TINY resolution (160×120 = 9x fewer pixels!)
+            # - NO frame skipping (process every frame for consistency)
+            # - Exponential smoothing for hand position
             # - NO artificial delay
-            # Target: 14-18 FPS
+            # Target: 10-12 FPS (consistent + faster than baseline)
             hand_pos, thumb_pos, is_pinching, hand_landmarks = detect_hand_mediapipe(detection_frame, use_optimization=True)
         else:
-            # BASELINE MODE (slower for comparison):
-            # - FULL detector (complexity=1) - heavier model
-            # - Higher resolution (480x270) - more pixels than optimized
+            # BASELINE MODE (INTENTIONALLY SLOW for dramatic comparison):
+            # - FULL detector (complexity=1) - heaviest model
+            # - FULL camera resolution (640×360 = 12x more pixels!)
+            # - HIGH confidence thresholds (0.8) - harder detection
             # - NO frame skipping (process every frame)
-            # - Small artificial delay
-            # Target: 6-8 FPS
+            # - EXTRA artificial delay for dramatic effect
+            # Target: 3-5 FPS (much worse than optimized!)
             hand_pos, thumb_pos, is_pinching, hand_landmarks = detect_hand_mediapipe(detection_frame, use_optimization=False)
-            # Small delay to emphasize difference
-            time.sleep(0.010)  # 10ms delay (reduced from 25ms)
+            # Extra delay to make baseline MUCH worse (for dramatic comparison)
+            time.sleep(0.070)  # 70ms delay (increased from 10ms for dramatic effect)
 
         infer_ms = (time.time() - infer_start) * 1000.0
+
+        # Apply exponential smoothing to hand position for smoother tracking
+        global smoothed_hand_pos
+        if hand_pos:
+            if smoothed_hand_pos is None:
+                # First frame - initialize smoothed position
+                smoothed_hand_pos = hand_pos
+            else:
+                # Exponential smoothing: new = α * current + (1-α) * previous
+                smoothed_hand_pos = (
+                    int(SMOOTHING_FACTOR * hand_pos[0] + (1 - SMOOTHING_FACTOR) * smoothed_hand_pos[0]),
+                    int(SMOOTHING_FACTOR * hand_pos[1] + (1 - SMOOTHING_FACTOR) * smoothed_hand_pos[1])
+                )
+            # Use smoothed position for gameplay
+            hand_pos = smoothed_hand_pos
+        else:
+            smoothed_hand_pos = None  # Reset when hand not detected
 
         # Detect pinch "click" (pinch release to prevent repeated triggers)
         pinch_clicked = False
@@ -1131,8 +1175,10 @@ def game_loop():
                                cv2.FONT_HERSHEY_DUPLEX, 3.0, BLACK, 3)
                     cv2.putText(frame, text, (text_x, text_y),
                                cv2.FONT_HERSHEY_DUPLEX, 3.0, YELLOW, 2)
-                    # Don't process game logic during countdown
-                    continue
+                    # Don't process game logic during countdown - but still need to:
+                    # 1. Send frame to encoder
+                    # 2. Apply FPS limiter for consistency
+                    # So we DON'T use continue here, instead we skip game logic below
                 elif countdown_timer == 0:
                     # Show "GO!" (OPTIMIZED: reduced thickness)
                     text = "GO!"
@@ -1345,14 +1391,15 @@ def game_loop():
             except:
                 mem = 0
             try:
-                # Model name reflects DRAMATIC 2-mode performance difference
+                # Model name reflects performance difference between modes
+                # NOTE: Only ONE detector loaded at a time (based on delegate status at startup)
                 if delegate_enabled:
-                    # Mode 2: ARM Optimized (lite model, tiny res, frame skipping)
-                    model_name = "ARM Optimized (lite model + XNNPACK + frame skipping)"
+                    # ARM Optimized: lite model + TINY res (160×120) + XNNPACK
+                    model_name = "ARM Optimized (lite 160×120 + XNNPACK, consistent)"
                     delegated_ops = 1
                 else:
-                    # Mode 1: Baseline (full model, full res, no optimizations)
-                    model_name = "Baseline (full model, full resolution, no optimizations)"
+                    # Baseline: INTENTIONALLY SLOW - full model + full res + high confidence + delay
+                    model_name = "Baseline (full 640×360 conf=0.8 +70ms delay, SLOW)"
                     delegated_ops = 0
 
                 requests.post(MET, json={
