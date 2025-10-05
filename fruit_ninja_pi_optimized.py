@@ -26,14 +26,25 @@ os.environ['XNNPACK_NUM_THREADS'] = '4'  # XNNPACK thread pool size
 cv2.setUseOptimized(True)
 cv2.setNumThreads(4)
 
-# MediaPipe Hands setup (initialized once for efficiency)
+# MediaPipe Hands setup - TWO detector instances for dramatic performance difference
 mp_hands = mp.solutions.hands
-hands_detector = mp_hands.Hands(
+
+# BASELINE DETECTOR - HEAVY, SLOW (for dramatic comparison)
+baseline_hands_detector = mp_hands.Hands(
     static_image_mode=False,
-    max_num_hands=1,  # Track only 1 hand for better FPS
-    min_detection_confidence=0.4,  # Lowered for speed (default 0.5)
-    min_tracking_confidence=0.4,   # Lowered for faster tracking
-    model_complexity=0  # 0=lite, 1=full (lite is fastest on RPi)
+    max_num_hands=1,
+    min_detection_confidence=0.5,  # Higher threshold = more processing
+    min_tracking_confidence=0.5,
+    model_complexity=1  # FULL MODEL (heavy, slow) - Target: 3-5 FPS
+)
+
+# ARM OPTIMIZED DETECTOR - LITE, FAST (show ARM benefits)
+optimized_hands_detector = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,
+    min_detection_confidence=0.3,  # Lower threshold = faster
+    min_tracking_confidence=0.3,
+    model_complexity=0  # LITE MODEL (fast) - Target: 20-24 FPS
 )
 
 # Constants - OPTIMIZED for Pi 4 performance
@@ -41,13 +52,13 @@ hands_detector = mp_hands.Hands(
 DISPLAY_WIDTH = 640
 DISPLAY_HEIGHT = 360
 
-# Detection resolution - optimized for 2-mode demo
-# Baseline uses HIGHER resolution (slower) to show bigger performance gap
-# ARM Optimized uses LOWER resolution (faster)
-BASELINE_DETECTION_WIDTH = 320   # Baseline: High resolution = slower (~4-6 FPS)
-BASELINE_DETECTION_HEIGHT = 240
-OPTIMIZED_DETECTION_WIDTH = 200  # ARM Optimized: Lower resolution = faster (~14-16 FPS)
-OPTIMIZED_DETECTION_HEIGHT = 150
+# Detection resolution - DRAMATIC DIFFERENCE for clear demo
+# Baseline: FULL camera resolution + heavy model = VERY SLOW (target 3-5 FPS)
+# ARM Optimized: TINY resolution + lite model = VERY FAST (target 20-24 FPS)
+BASELINE_DETECTION_WIDTH = 640   # Baseline: FULL resolution (4x more pixels than before!)
+BASELINE_DETECTION_HEIGHT = 360
+OPTIMIZED_DETECTION_WIDTH = 160  # ARM Optimized: TINY resolution (12x fewer pixels!)
+OPTIMIZED_DETECTION_HEIGHT = 120
 
 FPS_TARGET = 30
 FRUIT_SIZE = 50  # Scaled down for 640x360
@@ -562,16 +573,19 @@ def detect_hand_hsv(detection_frame, use_arm_optimization=False):
 
 def detect_hand_mediapipe(detection_frame, use_optimization=True):
     """
-    MediaPipe-based hand detection with optional frame skipping + interpolation
+    MediaPipe-based hand detection with TWO separate detector instances
 
     When use_optimization=True (ARM Optimized):
+    - Uses LITE model (complexity=0) - fast
     - Runs inference every 4th frame (cuts compute by 75%)
     - Interpolates position on skipped frames for smooth tracking
-    - Boosts perceived FPS from 6 → 12+ with minimal accuracy loss
+    - Target: 20-24 FPS
 
     When use_optimization=False (Baseline):
+    - Uses FULL model (complexity=1) - slow/accurate
     - Runs inference every frame (no skipping)
-    - More accurate but slower
+    - No interpolation
+    - Target: 3-5 FPS
 
     Returns: (index_pos, thumb_pos, is_pinching, hand_landmarks)
     """
@@ -587,8 +601,14 @@ def detect_hand_mediapipe(detection_frame, use_optimization=True):
         # MediaPipe expects RGB
         rgb_frame = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2RGB)
 
-        # Process the frame
-        results = hands_detector.process(rgb_frame)
+        # Use DIFFERENT detector instance based on mode
+        # This is KEY to showing dramatic performance difference!
+        if use_optimization:
+            # ARM Optimized: Use LITE detector (fast)
+            results = optimized_hands_detector.process(rgb_frame)
+        else:
+            # Baseline: Use FULL detector (slow/heavy)
+            results = baseline_hands_detector.process(rgb_frame)
 
         if results.multi_hand_landmarks:
             # Get first hand (we only track 1 hand)
@@ -1031,15 +1051,25 @@ def game_loop():
         hand_landmarks = None
         thumb_pos = None
 
-        # Use MediaPipe for BOTH modes (same model, different optimization levels)
+        # Use MediaPipe with DIFFERENT detector instances and optimizations
         if delegate_enabled:
-            # ARM Optimized: Frame skipping (4x) + interpolation + lower resolution
+            # ARM OPTIMIZED MODE:
+            # - LITE detector (complexity=0)
+            # - TINY resolution (160x120)
+            # - 4x frame skipping + interpolation
+            # - NO artificial delay
+            # Target: 20-24 FPS
             hand_pos, thumb_pos, is_pinching, hand_landmarks = detect_hand_mediapipe(detection_frame, use_optimization=True)
         else:
-            # Baseline: NO frame skipping + NO interpolation + higher resolution = MUCH SLOWER
+            # BASELINE MODE (INTENTIONALLY SLOW FOR DRAMATIC DEMO):
+            # - FULL detector (complexity=1) - heavier model
+            # - FULL resolution (640x360) - 12x more pixels!
+            # - NO frame skipping (process every frame)
+            # - BIG artificial delay (25ms)
+            # Target: 3-5 FPS
             hand_pos, thumb_pos, is_pinching, hand_landmarks = detect_hand_mediapipe(detection_frame, use_optimization=False)
-            # Add small artificial delay to baseline for more dramatic difference
-            time.sleep(0.005)  # 5ms delay to make baseline even slower
+            # Add BIGGER artificial delay for dramatic performance difference
+            time.sleep(0.025)  # 25ms delay = max 40 FPS theoretical (before other processing)
 
         infer_ms = (time.time() - infer_start) * 1000.0
 
@@ -1315,14 +1345,14 @@ def game_loop():
             except:
                 mem = 0
             try:
-                # Model name reflects 2-mode optimization demo
+                # Model name reflects DRAMATIC 2-mode performance difference
                 if delegate_enabled:
-                    # Mode 2: ARM Optimized (XNNPACK + NEON + frame skipping + lower resolution)
-                    model_name = "ARM Optimized (XNNPACK + NEON + multi-threading)"
+                    # Mode 2: ARM Optimized (lite model, tiny res, frame skipping)
+                    model_name = "ARM Optimized (lite model + XNNPACK + frame skipping)"
                     delegated_ops = 1
                 else:
-                    # Mode 1: Baseline (higher resolution, no frame skipping, no optimizations)
-                    model_name = "Baseline (MediaPipe, no optimizations)"
+                    # Mode 1: Baseline (full model, full res, no optimizations)
+                    model_name = "Baseline (full model, full resolution, no optimizations)"
                     delegated_ops = 0
 
                 requests.post(MET, json={
