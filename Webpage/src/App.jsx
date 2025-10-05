@@ -5,7 +5,31 @@ export default function GameStreamMonitor() {
   const [activeStream, setActiveStream] = useState(1);
   const [piMetrics, setPiMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [switching, setSwitching] = useState(false);
+
+  // Combined Palette
+  const colors = {
+    // Dark Palette for Backgrounds (Blue/Navy)
+    mainBackground: '#000D1B', // Darkest Navy/Black (Used as main UI background)
+    sectionBackground: '#002952', // Darker Blue for main panels
+    cardBackground: '#003C78', // Medium Blue for cards
+    borderColor: '#3071A7', // Accent Blue for borders
+    
+    // Light Palette for Text & Accents (Warm/Sunrise)
+    primaryText: '#E6E0C0', // Lightest Cream (from dark palette) for main text
+    accentText: '#FFD7C5',  // Light Peach for secondary text/labels
+    
+    // Accents & Status (Warm Tones)
+    brightAccent: '#FFECC0', // Very Light Cream/Yellow (FPS, Score, Icon)
+    optimizedColor: '#E192B4', // Mid Pink for Optimized (High-Vis)
+    baselineColor: '#FFD2A8', // Light Peach for Baseline
+    alertColor: '#9C628C',     // Deep Mauve for Alerts (Temp, Missed, LIVE)
+    
+    // Derived for UI elements
+    mutedIcon: '#3071A7', // Using border color for muted icons
+
+    // New Color for Baseline Text (Dark text on light background for contrast)
+    darkText: '#000D1B' // Deep Navy/Black for contrast
+  };
 
   // Fetch real-time metrics from Pi via proxy
   useEffect(() => {
@@ -26,68 +50,63 @@ export default function GameStreamMonitor() {
 
     // Set up polling every 1 second
     const interval = setInterval(fetchMetrics, 1000);
-
+    
     return () => clearInterval(interval);
   }, []);
 
-  // Toggle delegate mode (1: Baseline, 2: ARM Optimized)
-  // Shows loading spinner during 6-second service restart
-  const setMode = async (mode) => {
-    setSwitching(true);  // Show loading spinner
-
+  // Toggle delegate setting on Pi via proxy
+  const toggleDelegate = async () => {
     try {
-      if (mode === 1) {
-        // Mode 1: Baseline - disable delegate
-        await fetch(`/api/control/delegate?enable=false`, { method: 'POST' });
-      } else if (mode === 2) {
-        // Mode 2: ARM Optimized - enable delegate
-        await fetch(`/api/control/delegate?enable=true`, { method: 'POST' });
-      }
-
-      // Wait 6 seconds for service to restart and stabilize
-      await new Promise(resolve => setTimeout(resolve, 6000));
+      const newState = !piMetrics?.delegate_enabled;
+      // Optimistically update the state for a smoother UI experience
+      setPiMetrics(prev => ({
+          ...prev,
+          delegate_enabled: newState
+      }));
+      await fetch(`/api/control/delegate?enable=${newState}`, {
+        method: 'POST'
+      });
+      
+      // Metrics will update automatically via polling
     } catch (error) {
-      console.error('Failed to set mode:', error);
-    } finally {
-      setSwitching(false);  // Hide loading spinner
+      console.error('Failed to toggle delegate:', error);
+      // Revert the optimistic update if the API call fails
+      setPiMetrics(prev => ({
+          ...prev,
+          delegate_enabled: !newState
+      }));
     }
-  };
-
-  // Determine current mode based on delegate status
-  const getCurrentMode = () => {
-    return piMetrics?.delegate_enabled ? 2 : 1;
   };
 
   // Stream configuration
   const currentStream = {
     videoUrl: '/api/stream',
     fps: piMetrics?.fps || 0,
-    frameTime: piMetrics?.frame_time_ms || (piMetrics?.fps ? (1000 / piMetrics.fps).toFixed(1) : 0),
+    frameTime: piMetrics?.fps ? (1000 / piMetrics.fps).toFixed(1) : 0,
     temperature: piMetrics?.cpu_temp_c || 0,
     memoryUsage: piMetrics?.mem_used_mb ? (piMetrics.mem_used_mb / 1024).toFixed(1) : 0,
     inferenceTime: piMetrics?.infer_ms || 0,
     gameScore: piMetrics?.game_score || 0,
     gameMissed: piMetrics?.game_missed || 0,
     gameFruits: piMetrics?.game_fruits || 0,
-    gameParticles: piMetrics?.game_particles || 0,
     modelName: piMetrics?.model_name || 'Loading...',
     delegateEnabled: piMetrics?.delegate_enabled || false
   };
 
   const MetricCard = ({ icon: Icon, label, value, unit, color }) => (
     <div style={{
-      backgroundColor: '#1f2937',
-      borderRadius: '0.5rem',
-      padding: '0.75rem',
-      border: '1px solid #374151'
+      backgroundColor: colors.cardBackground, // Medium Blue
+      borderRadius: '0.375rem',
+      padding: '0.5rem',
+      border: `1px solid ${colors.borderColor}` // Accent Blue
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-        <Icon style={{ width: '1rem', height: '1rem', color: color }} />
-        <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>{label}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', marginBottom: '0.25rem' }}>
+        <Icon style={{ width: '0.875rem', height: '0.875rem', color: color }} />
+        <span style={{ color: colors.accentText, fontSize: '0.75rem' }}>{label}</span> {/* Light Peach */}
       </div>
-      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'white' }}>
+      <div style={{ fontSize: '1rem', fontWeight: 'bold', color: colors.primaryText }}> {/* Light Cream */}
         {value}
-        <span style={{ fontSize: '0.875rem', color: '#9ca3af', marginLeft: '0.25rem' }}>{unit}</span>
+        <span style={{ fontSize: '0.75rem', color: colors.accentText, marginLeft: '0.25rem' }}>{unit}</span> {/* Light Peach */}
       </div>
     </div>
   );
@@ -95,193 +114,118 @@ export default function GameStreamMonitor() {
   return (
     <div style={{ 
       minHeight: '100vh', 
-      backgroundColor: '#111827', 
-      color: 'white', 
-      padding: '1.5rem' 
+      backgroundColor: colors.mainBackground, // Darkest Navy
+      color: colors.primaryText, // Light Cream
+      padding: '0'
     }}>
-      {/* Header */}
-      <div style={{
-        marginBottom: '1.5rem',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between'
-      }}>
-        <div>
-          <h1 style={{ fontSize: '2.25rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            ARM Optimization Demo
-          </h1>
-          <p style={{ color: '#9ca3af' }}>Live comparison: Baseline vs ARM Optimized (instant switching!)</p>
-        </div>
-
-        {/* Mode Selection Buttons - 2 Modes Only */}
-        <div style={{ display: 'flex', gap: '1rem' }}>
-          <button
-            onClick={() => setMode(1)}
-            disabled={loading || switching}
-            style={{
-              backgroundColor: getCurrentMode() === 1 ? '#dc2626' : '#374151',
-              padding: '1rem 1.75rem',
-              borderRadius: '0.5rem',
-              fontWeight: '600',
-              border: getCurrentMode() === 1 ? '2px solid #fca5a5' : '2px solid transparent',
-              cursor: (loading || switching) ? 'not-allowed' : 'pointer',
-              color: 'white',
-              opacity: (loading || switching) ? 0.5 : 1,
-              transition: 'all 0.2s',
-              fontSize: '1rem'
-            }}
-          >
-            <div style={{ fontSize: '0.75rem', opacity: 0.8, marginBottom: '0.25rem' }}>MODE 1</div>
-            <div style={{ fontSize: '1.1rem' }}>Baseline (SLOW)</div>
-            <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>~4 FPS</div>
-          </button>
-
-          <button
-            onClick={() => setMode(2)}
-            disabled={loading || switching}
-            style={{
-              backgroundColor: getCurrentMode() === 2 ? '#059669' : '#374151',
-              padding: '1rem 1.75rem',
-              borderRadius: '0.5rem',
-              fontWeight: '600',
-              border: getCurrentMode() === 2 ? '2px solid #6ee7b7' : '2px solid transparent',
-              cursor: (loading || switching) ? 'not-allowed' : 'pointer',
-              color: 'white',
-              opacity: (loading || switching) ? 0.5 : 1,
-              transition: 'all 0.2s',
-              fontSize: '1rem'
-            }}
-          >
-            <div style={{ fontSize: '0.75rem', opacity: 0.8, marginBottom: '0.25rem' }}>MODE 2</div>
-            <div style={{ fontSize: '1.1rem' }}>ARM Optimized ⚡</div>
-            <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>~20 FPS (5-6x faster!)</div>
-          </button>
-        </div>
-      </div>
-
       {/* Main Content */}
-      <div style={{ display: 'flex', gap: '1.5rem' }}>
-        {/* Metrics Section - Left Side */}
-        <div style={{ width: '20%', minWidth: '250px' }}>
+      <div style={{ display: 'flex', gap: '0', height: '100vh' }}>
+        {/* Video Stream Section - Left Side */}
+        <div style={{ flex: 1, display: 'flex' }}>
           <div style={{
-            backgroundColor: '#1f2937',
-            borderRadius: '0.5rem',
+            backgroundColor: colors.sectionBackground, // Darker Blue
             padding: '1rem',
-            border: '1px solid #374151'
-          }}>
-            <h2 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem' }}>
-              Performance Metrics
-            </h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <MetricCard
-                icon={Activity}
-                label="FPS"
-                value={currentStream.fps}
-                unit="fps"
-                color="#22c55e"
-              />
-              <MetricCard
-                icon={Clock}
-                label="Frame Time"
-                value={currentStream.frameTime}
-                unit="ms"
-                color="#3b82f6"
-              />
-              <MetricCard
-                icon={Clock}
-                label="Inference Time"
-                value={currentStream.inferenceTime}
-                unit="ms"
-                color="#a855f7"
-              />
-              <MetricCard
-                icon={Thermometer}
-                label="Temperature"
-                value={currentStream.temperature}
-                unit="°C"
-                color="#ef4444"
-              />
-              <MetricCard
-                icon={HardDrive}
-                label="Memory Usage"
-                value={currentStream.memoryUsage}
-                unit="GB"
-                color="#06b6d4"
-              />
-              <MetricCard
-                icon={Gamepad2}
-                label="Game Score"
-                value={currentStream.gameScore}
-                unit="pts"
-                color="#22c55e"
-              />
-              <MetricCard
-                icon={Activity}
-                label="Fruits Active"
-                value={currentStream.gameFruits}
-                unit=""
-                color="#f97316"
-              />
-              <MetricCard
-                icon={Activity}
-                label="Missed"
-                value={currentStream.gameMissed}
-                unit=""
-                color="#ec4899"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Video Stream Section - Right Side */}
-        <div style={{ flex: 1 }}>
-          <div style={{
-            backgroundColor: '#1f2937',
-            borderRadius: '0.5rem',
-            padding: '1rem',
-            border: '1px solid #374151'
+            border: `1px solid ${colors.borderColor}`, // Accent Blue
+            borderRight: 'none',
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column'
           }}>
             <div style={{
               display: 'flex',
-              alignItems: 'center',
+              alignItems: 'center', 
               justifyContent: 'space-between',
-              marginBottom: '1rem'
+              marginBottom: '1rem' 
             }}>
-              <div>
-                <h2 style={{ fontSize: '1.25rem', fontWeight: '600' }}>
-                  Fruit Ninja AR - {getCurrentMode() === 1 ? 'Baseline' : 'ARM Optimized'}
+              {/* Left Column: Text (Reordered and Resized) */}
+              <div style={{ flex: 1 }}>
+                {/* Header (Much Bigger) - NOW FIRST */}
+                <h2 style={{ 
+                    fontSize: '1.875rem', // text-3xl
+                    fontWeight: '600', 
+                    color: colors.primaryText,
+                    lineHeight: '1.2' // keeps text tight
+                }}>
+                  Fruit Ninja AR - {currentStream.delegateEnabled ? 'ARM Optimized' : 'Baseline'}
                 </h2>
-                <p style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
-                  {currentStream.modelName}
+                {/* Model: (NOW UNDER HEADER) */}
+                <p style={{ color: colors.accentText, fontSize: '0.875rem', marginTop: '0.25rem', marginBottom: '0' }}> 
+                  Model: {currentStream.modelName}
                 </p>
               </div>
-              <span style={{
-                padding: '0.25rem 0.75rem',
-                backgroundColor: '#dc2626',
-                borderRadius: '9999px',
-                fontSize: '0.875rem',
-                fontWeight: '500',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem'
+              
+              {/* Right Column: Button and LIVE tag (Adjusted Margin) */}
+              <div style={{ 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  alignItems: 'flex-end', 
+                  gap: '0.5rem',
+                  marginTop: '0.5rem' // Margin for spacing above the button group
               }}>
+                <button
+                  onClick={toggleDelegate}
+                  disabled={loading}
+                  style={{
+                    backgroundColor: currentStream.delegateEnabled ? colors.optimizedColor : colors.baselineColor, // Pink vs Peach
+                    marginBottom: '1.5rem', 
+                    padding: '0.5rem 1rem',
+                    borderRadius: '0.375rem',
+                    fontWeight: '600',
+                    fontSize: '0.875rem',
+                    border: 'none',
+                    cursor: loading ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    // Changed text color based on background:
+                    color: currentStream.delegateEnabled ? colors.primaryText : colors.darkText, 
+                    opacity: loading ? 0.7 : 1
+                  }}
+                  onMouseOver={(e) => {
+                    if (!loading) {
+                      e.target.style.backgroundColor = currentStream.delegateEnabled ? '#C07E9F' : '#E0A78F'; // Slightly darker hover
+                    }
+                  }}
+                  onMouseOut={(e) => {
+                    if (!loading) {
+                      e.target.style.backgroundColor = currentStream.delegateEnabled ? colors.optimizedColor : colors.baselineColor;
+                    }
+                  }}
+                >
+                  <Gamepad2 style={{ width: '1rem', height: '1rem' }} />
+                  {loading ? 'Loading...' : (currentStream.delegateEnabled ? 'ARM Optimized' : 'Baseline')}
+                </button>
                 <span style={{
-                  width: '0.5rem',
-                  height: '0.5rem',
-                  backgroundColor: 'white',
+                  padding: '0.25rem 0.5rem',
+                  backgroundColor: colors.alertColor, // Deep Mauve
                   borderRadius: '9999px',
-                  animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
-                }}></span>
-                LIVE
-              </span>
+                  fontSize: '0.75rem',
+                  fontWeight: '500',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.375rem',
+                  color: colors.primaryText // Light Cream text on LIVE tag
+                }}>
+                  <span style={{
+                    width: '0.375rem',
+                    height: '0.375rem',
+                    backgroundColor: colors.primaryText, 
+                    borderRadius: '9999px',
+                    animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+                  }}></span>
+                  LIVE
+                </span>
+              </div>
             </div>
             <div style={{
-              aspectRatio: '16/9',
-              backgroundColor: '#111827',
+              flex: 1,
+              backgroundColor: colors.mainBackground, // Darkest Navy
               borderRadius: '0.5rem',
               overflow: 'hidden',
-              border: '1px solid #374151',
-              position: 'relative'
+              border: `1px solid ${colors.borderColor}`, // Accent Blue
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
             }}>
               {loading ? (
                 <div style={{
@@ -290,43 +234,25 @@ export default function GameStreamMonitor() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#9ca3af'
+                  color: colors.accentText 
                 }}>
                   Loading stream...
                 </div>
               ) : (
-                <>
-                  <img
-                    src={currentStream.videoUrl}
-                    alt="Fruit Ninja AR Stream"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'contain',
-                      backgroundColor: '#000'
-                    }}
-                    onError={(e) => {
-                      e.target.style.display = 'none';
-                      e.target.nextSibling.style.display = 'flex';
-                    }}
-                  />
-                  {/* Performance overlay - rendered on frontend for sharp text */}
-                  <div style={{
-                    position: 'absolute',
-                    bottom: '10px',
-                    left: '10px',
-                    color: 'white',
-                    fontSize: '14px',
-                    fontFamily: 'monospace',
-                    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-                    padding: '4px 8px',
-                    borderRadius: '4px',
-                    pointerEvents: 'none',
-                    whiteSpace: 'nowrap'
-                  }}>
-                    FPS: {currentStream.fps} | Frame: {currentStream.frameTime}ms | Fruits: {currentStream.gameFruits} | Particles: {currentStream.gameParticles}
-                  </div>
-                </>
+                <img
+                  src={currentStream.videoUrl}
+                  alt="Fruit Ninja AR Stream"
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    backgroundColor: colors.mainBackground
+                  }}
+                  onError={(e) => {
+                    e.target.style.display = 'none';
+                    e.target.nextSibling.style.display = 'flex';
+                  }}
+                />
               )}
               <div style={{
                 width: '100%',
@@ -334,59 +260,105 @@ export default function GameStreamMonitor() {
                 display: 'none',
                 alignItems: 'center',
                 justifyContent: 'center',
-                color: '#ef4444',
+                color: colors.alertColor, // Deep Mauve
                 flexDirection: 'column',
                 gap: '0.5rem'
               }}>
                 <p>Stream Offline</p>
-                <p style={{ fontSize: '0.875rem', color: '#9ca3af' }}>
+                <p style={{ fontSize: '0.875rem', color: colors.accentText }}>
                   Check Pi connection
                 </p>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Loading Spinner Overlay During Mode Switching */}
-      {switching && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.85)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 9999,
-          flexDirection: 'column',
-          gap: '1.5rem'
-        }}>
+        {/* Metrics Section - Right Side */}
+        <div style={{ width: '20%', minWidth: '250px' }}>
           <div style={{
-            width: '80px',
-            height: '80px',
-            border: '6px solid #374151',
-            borderTop: '6px solid #22c55e',
-            borderRadius: '50%',
-            animation: 'spin 1s linear infinite'
-          }}></div>
-          <div style={{ textAlign: 'center' }}>
-            <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '0.5rem', color: 'white' }}>
-              Switching Modes...
+            backgroundColor: colors.sectionBackground, // Darker Blue
+            padding: '1rem',
+            border: `1px solid ${colors.borderColor}`, // Accent Blue
+            borderLeft: 'none',
+            height: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            boxSizing: 'border-box'
+          }}>
+            <h2 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '0.75rem' }}>
+              Performance Metrics
             </h2>
-            <p style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
-              Restarting service with new configuration
-            </p>
-            <p style={{ color: '#6b7280', fontSize: '0.75rem', marginTop: '0.5rem' }}>
-              This takes ~6 seconds to ensure clean performance comparison
-            </p>
+            <div 
+              className="custom-scrollbar" 
+              style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', overflowY: 'auto' }}
+            >
+              <MetricCard
+                icon={Activity}
+                label="FPS"
+                value={currentStream.fps}
+                unit="fps"
+                color={colors.brightAccent} 
+              />
+              <MetricCard
+                icon={Clock}
+                label="Frame Time"
+                value={currentStream.frameTime}
+                unit="ms"
+                color={colors.baselineColor} 
+              />
+              <MetricCard
+                icon={Clock}
+                label="Inference Time"
+                value={currentStream.inferenceTime}
+                unit="ms"
+                color={colors.baselineColor} 
+              />
+              <MetricCard
+                icon={Thermometer}
+                label="Temperature"
+                value={currentStream.temperature}
+                unit="°C"
+                color={colors.alertColor} 
+              />
+              <MetricCard
+                icon={HardDrive}
+                label="Memory Usage"
+                value={currentStream.memoryUsage}
+                unit="GB"
+                color={colors.mutedIcon} 
+              />
+              <MetricCard
+                icon={Gamepad2}
+                label="Game Score"
+                value={currentStream.gameScore}
+                unit="pts"
+                color={colors.brightAccent} 
+              />
+              <MetricCard
+                icon={Activity}
+                label="Fruits Active"
+                value={currentStream.gameFruits}
+                unit=""
+                color={colors.brightAccent} 
+              />
+              <MetricCard
+                icon={Activity}
+                label="Missed"
+                value={currentStream.gameMissed}
+                unit=""
+                color={colors.alertColor} 
+              />
+            </div>
           </div>
         </div>
-      )}
+      </div>
 
       <style>{`
+        /* Google Sans Emulation (Global Font Stack) */
+        * {
+            font-family: 'Inter', 'Roboto', 'Arial', sans-serif;
+        }
+
         @keyframes pulse {
           0%, 100% {
             opacity: 1;
@@ -395,14 +367,24 @@ export default function GameStreamMonitor() {
             opacity: 0.5;
           }
         }
+        
+        /* Custom Scrollbar Styles */
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 8px;
+        }
 
-        @keyframes spin {
-          0% {
-            transform: rotate(0deg);
-          }
-          100% {
-            transform: rotate(360deg);
-          }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: ${colors.sectionBackground}; 
+          border-radius: 10px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: ${colors.borderColor}; 
+          border-radius: 10px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: ${colors.accentText};
         }
       `}</style>
     </div>
