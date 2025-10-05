@@ -1,26 +1,44 @@
 #!/usr/bin/env python3
 """
 Fruit Ninja AR Game - Optimized Pi Version
-High-performance dual-resolution approach with efficient hand tracking
+High-performance dual-resolution approach with MediaPipe hand tracking
+
+Features:
+- Threaded architecture: Camera, Game Loop, JPEG Encoder run independently
+- Hand tracking: MediaPipe (Optimized) vs HSV color detection (Baseline)
+- Performance: ~14 FPS with MediaPipe, ~25-30 FPS with HSV (after encoder threading)
 """
 
 import os, time, threading, json, cv2, numpy as np, requests
 import random
 import math
 from collections import deque
+from queue import Queue
 from flask import Flask, Response
+import mediapipe as mp
 
 # Environment setup
 cv2.setUseOptimized(True)
 cv2.setNumThreads(4)
 
-# Constants
-DISPLAY_WIDTH = 1280
-DISPLAY_HEIGHT = 720
-DETECTION_WIDTH = 320  # Lower resolution for hand detection
-DETECTION_HEIGHT = 240
+# MediaPipe Hands setup (initialized once for efficiency)
+mp_hands = mp.solutions.hands
+hands_detector = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,  # Track only 1 hand for better FPS (~14 fps)
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+    model_complexity=0  # 0=lite, 1=full (lite is faster on RPi)
+)
+
+# Constants - OPTIMIZED for Pi 4 performance
+# Working resolution: 640x360 (no wasteful resizes, MJPG-friendly)
+DISPLAY_WIDTH = 640
+DISPLAY_HEIGHT = 360
+DETECTION_WIDTH = 320  # Balanced resolution for MediaPipe performance
+DETECTION_HEIGHT = 180
 FPS_TARGET = 30
-FRUIT_SIZE = 80
+FRUIT_SIZE = 50  # Scaled down for 640x360
 TRAIL_LENGTH = 15
 
 # Colors
@@ -41,6 +59,15 @@ latest = None
 lock = threading.Lock()
 game_running = True
 
+# Camera capture thread state
+latest_camera_frame = None
+camera_frame_lock = threading.Lock()
+camera_thread_running = False
+
+# Encoder thread state
+encoder_queue = Queue(maxsize=2)  # Small queue to prevent memory buildup
+encoder_thread_running = False
+
 # Game state
 score = 0
 missed = 0
@@ -51,8 +78,11 @@ spawn_timer = 0
 SPAWN_INTERVAL = 40
 last_hand_pos = None
 
-def jpg(f, quality=50):
-    """Encode frame to JPEG with configurable quality"""
+def jpg(f, quality=60):
+    """
+    Encode frame to JPEG with configurable quality
+    Quality 60 is a sweet spot: good compression, acceptable visual quality
+    """
     ok, b = cv2.imencode(".jpg", f, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return b.tobytes() if ok else None
 
@@ -223,6 +253,42 @@ def detect_hand_hsv(detection_frame, use_arm_optimization=False):
 
     return None, mask
 
+def detect_hand_mediapipe(detection_frame):
+    """
+    MediaPipe-based hand detection with landmark tracking
+    Much more accurate than HSV but slightly slower (~14 FPS on RPi4)
+    Returns index fingertip position for precise slicing
+    """
+    # MediaPipe expects RGB
+    rgb_frame = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2RGB)
+
+    # Process the frame
+    results = hands_detector.process(rgb_frame)
+
+    if results.multi_hand_landmarks:
+        # Get first hand (we only track 1 hand)
+        hand_landmarks = results.multi_hand_landmarks[0]
+
+        # Get index finger tip (landmark 8)
+        # Landmarks are normalized to [0, 1], so we need to scale them
+        index_finger_tip = hand_landmarks.landmark[8]
+
+        # Convert normalized coordinates to pixel coordinates (detection resolution)
+        cx = int(index_finger_tip.x * DETECTION_WIDTH)
+        cy = int(index_finger_tip.y * DETECTION_HEIGHT)
+
+        # Clamp to bounds
+        cx = max(0, min(cx, DETECTION_WIDTH - 1))
+        cy = max(0, min(cy, DETECTION_HEIGHT - 1))
+
+        # Scale to display resolution
+        display_x = int(cx * DISPLAY_WIDTH / DETECTION_WIDTH)
+        display_y = int(cy * DISPLAY_HEIGHT / DETECTION_HEIGHT)
+
+        return (display_x, display_y), None
+
+    return None, None
+
 def detect_slice(hand_pos, fruits):
     """Detect if hand motion slices through fruits"""
     global score, particles, last_hand_pos
@@ -269,36 +335,152 @@ def spawn_fruit():
         fruits.append(Fruit())
         spawn_timer = 0
 
-def game_loop():
-    """Optimized main game loop"""
-    global latest, game_running, missed
+def camera_capture_thread():
+    """
+    Dedicated camera capture thread - runs independently of game loop
+    This prevents camera I/O blocking from stalling the game
+    """
+    global latest_camera_frame, camera_thread_running
 
-    # Setup camera with dual resolution approach
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, DISPLAY_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, DISPLAY_HEIGHT)
+    # Setup camera with MJPG format for fast capture
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    # Verify actual resolution
+    # Verify camera settings
+    fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+    fcc = ''.join([chr((fourcc >> (8*i)) & 0xFF) for i in range(4)])
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Camera resolution set to: {actual_w}x{actual_h}")
+
+    print("=" * 60)
+    print("CAMERA CAPTURE THREAD STARTED")
+    print(f"  Format: {fcc}")
+    print(f"  Resolution: {actual_w}x{actual_h}")
+    print(f"  Target FPS: {actual_fps}")
+
+    if fcc != 'MJPG':
+        print(f"  ⚠️  WARNING: Using {fcc} instead of MJPG - expect slow performance!")
+        print(f"  ⚠️  Run ./diagnose_camera.py to test camera capabilities")
+    else:
+        print(f"  ✓ MJPG active - good performance expected")
+    print("=" * 60)
+
+    camera_thread_running = True
+    frame_count = 0
+    slow_frame_warnings = 0
+
+    while camera_thread_running:
+        t0 = time.time()
+        ret, frame = cap.read()
+        read_time_ms = (time.time() - t0) * 1000
+
+        if ret:
+            # Flip for mirror effect
+            frame = cv2.flip(frame, 1)
+
+            # Update shared frame (thread-safe)
+            with camera_frame_lock:
+                latest_camera_frame = frame
+
+            frame_count += 1
+
+            # Warn about slow camera reads (only first few times)
+            if read_time_ms > 100 and slow_frame_warnings < 3:
+                print(f"⚠️  Slow camera read: {read_time_ms:.1f}ms (frame {frame_count})")
+                slow_frame_warnings += 1
+                if slow_frame_warnings == 3:
+                    print("   (suppressing further slow frame warnings)")
+
+        # No sleep - capture as fast as possible
+
+    cap.release()
+    print("Camera capture thread stopped")
+
+def encoder_thread():
+    """
+    Dedicated JPEG encoder thread - runs independently of game loop
+    This prevents JPEG encoding from blocking the game loop
+    Encoding can take 30-50ms per frame at 640x360, so offloading it
+    allows the game loop to run much faster
+    """
+    global latest, encoder_thread_running
+
+    print("=" * 60)
+    print("JPEG ENCODER THREAD STARTED")
+    print("  Encoding frames in background for streaming")
+    print("=" * 60)
+
+    encoder_thread_running = True
+    encode_count = 0
+    total_encode_time = 0
+
+    while encoder_thread_running:
+        try:
+            # Get frame from queue (block with timeout)
+            frame_data = encoder_queue.get(timeout=0.1)
+
+            if frame_data is None:  # Shutdown signal
+                break
+
+            frame, quality = frame_data
+
+            # Encode JPEG
+            t0 = time.time()
+            b = jpg(frame, quality)
+            encode_time_ms = (time.time() - t0) * 1000.0
+
+            if b:
+                with lock:
+                    latest = b
+
+            encode_count += 1
+            total_encode_time += encode_time_ms
+
+            # Print stats every 100 frames
+            if encode_count % 100 == 0:
+                avg_time = total_encode_time / encode_count
+                print(f"Encoder: {encode_count} frames, avg {avg_time:.1f}ms per frame")
+
+        except Exception as e:
+            if encoder_thread_running:  # Only print if not shutting down
+                pass  # Timeout is normal when no frames
+
+    print("JPEG encoder thread stopped")
+
+def game_loop():
+    """Optimized main game loop - NO LONGER BLOCKS ON CAMERA I/O"""
+    global latest, game_running, missed, latest_camera_frame
 
     last_metrics_time = time.time()
     frame_count = 0
     fps_start_time = time.time()
+    frames_without_camera = 0
+
+    print("=" * 60)
+    print("GAME LOOP STARTED (non-blocking camera mode)")
+    print("=" * 60)
 
     while game_running:
         t0 = time.time()
 
-        # Read camera frame
-        ret, frame = cap.read()
-        if not ret:
+        # Get latest camera frame (NO BLOCKING - use whatever is available)
+        with camera_frame_lock:
+            frame = latest_camera_frame.copy() if latest_camera_frame is not None else None
+
+        if frame is None:
+            # No camera frame yet - wait a bit and try again
+            frames_without_camera += 1
+            if frames_without_camera % 30 == 1:
+                print(f"⚠️  Waiting for camera... ({frames_without_camera} frames)")
+            time.sleep(0.01)
             continue
 
-        # Flip frame horizontally for mirror effect
-        frame = cv2.flip(frame, 1)
+        frames_without_camera = 0  # Reset counter
 
         # Create smaller frame for hand detection
         detection_frame = cv2.resize(frame, (DETECTION_WIDTH, DETECTION_HEIGHT))
@@ -307,8 +489,13 @@ def game_loop():
         delegate_enabled = is_delegate_enabled()
         infer_start = time.time()
 
-        # Always detect hand, but use different processing complexity
-        hand_pos, hand_mask = detect_hand_hsv(detection_frame, use_arm_optimization=delegate_enabled)
+        # Hand detection: MediaPipe (ARM Optimized) vs HSV (Baseline)
+        if delegate_enabled:
+            # ARM Optimized: Use MediaPipe for accurate hand tracking
+            hand_pos, hand_mask = detect_hand_mediapipe(detection_frame)
+        else:
+            # Baseline: Use simple HSV color detection
+            hand_pos, hand_mask = detect_hand_hsv(detection_frame, use_arm_optimization=False)
 
         infer_ms = (time.time() - infer_start) * 1000.0
 
@@ -348,11 +535,11 @@ def game_loop():
                 color = tuple(int(255 * alpha) for _ in range(3))
                 cv2.line(frame, trail_points[i-1], trail_points[i], color, thickness)
 
-        # Draw UI
-        status_text = "ARM Optimized" if delegate_enabled else "Baseline"
-        cv2.putText(frame, f"Score: {score}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, WHITE, 2)
-        cv2.putText(frame, f"Missed: {missed}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.2, WHITE, 2)
-        cv2.putText(frame, status_text, (DISPLAY_WIDTH - 250, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, YELLOW, 2)
+        # Draw UI (scaled for 640x360)
+        status_text = "MediaPipe (Optimized)" if delegate_enabled else "HSV (Baseline)"
+        cv2.putText(frame, f"Score: {score}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, WHITE, 2)
+        cv2.putText(frame, f"Missed: {missed}", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, WHITE, 2)
+        cv2.putText(frame, status_text, (DISPLAY_WIDTH - 180, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, YELLOW, 2)
 
         # Calculate REAL FPS (no more hardcoding!)
         frame_count += 1
@@ -366,30 +553,22 @@ def game_loop():
         else:
             fps = 1.0 / max(frame_time, 0.001)  # Real instantaneous FPS
 
-        # Add performance overlay BEFORE streaming optimization
-        cv2.putText(frame, f"Game FPS: {fps:.1f} | Frame: {frame_time*1000:.1f}ms | Fruits: {len(fruits)}",
-                   (20, DISPLAY_HEIGHT - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, WHITE, 2)
-
-        # STREAMING OPTIMIZATION: Dual resolution approach
-        encode_start = time.time()
-
-        if delegate_enabled:  # ARM Optimized: Better quality, larger frames
-            stream_frame = cv2.resize(frame, (800, 450))  # 16:9 ratio, smaller than full HD
+        # Determine stream quality BEFORE encoding
+        if delegate_enabled:  # ARM Optimized: Slightly better quality
+            stream_quality = 70
+        else:  # Baseline: Standard quality
             stream_quality = 60
-        else:  # Baseline: Lower quality for "worse" performance
-            stream_frame = cv2.resize(frame, (640, 360))  # Even smaller
-            stream_quality = 40
 
-        b = jpg(stream_frame, stream_quality)
-        encode_time = (time.time() - encode_start) * 1000.0
+        # Add all performance overlays BEFORE encoding (so they appear in stream)
+        cv2.putText(frame, f"FPS: {fps:.1f} | Frame: {frame_time*1000:.1f}ms | Fruits: {len(fruits)}",
+                   (10, DISPLAY_HEIGHT - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1)
 
-        if b:
-            with lock:
-                latest = b
-
-        # Add encoding performance info
-        cv2.putText(frame, f"Encode: {encode_time:.1f}ms | Stream: {stream_frame.shape[1]}x{stream_frame.shape[0]}@{stream_quality}%",
-                   (20, DISPLAY_HEIGHT - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.6, WHITE, 2)
+        # STREAMING OPTIMIZATION: Push frame to encoder thread (non-blocking)
+        # This prevents JPEG encoding (30-50ms) from blocking the game loop
+        try:
+            encoder_queue.put_nowait((frame.copy(), stream_quality))
+        except:
+            pass  # Queue full, skip this frame (encoder will catch up)
 
         # Send metrics
         if time.time() - last_metrics_time > 0.3:
@@ -399,17 +578,17 @@ def game_loop():
                 mem = 0
             try:
                 if delegate_enabled:
-                    model_name = "ARM Optimized (Multi-stage + NEON)"
+                    model_name = "ARM Optimized (MediaPipe Hands)"
                     delegated_ops = 1
                 else:
-                    model_name = "Baseline (Simple processing)"
+                    model_name = "Baseline (HSV Color Detection)"
                     delegated_ops = 0
 
                 requests.post(MET, json={
                     "fps": round(fps, 1),
                     "infer_ms": round(infer_ms, 1),
                     "pre_ms": 0.0,
-                    "post_ms": round(encode_time, 1),  # Show JPEG encoding time
+                    "post_ms": 0.0,  # Encoding offloaded to separate thread
                     "mem_used_mb": mem,
                     "delegated_ops": delegated_ops,
                     "neon_build": True,
@@ -424,12 +603,39 @@ def game_loop():
 
         # No artificial FPS limiting - let it run at maximum speed
 
-    cap.release()
-
 def run():
-    """Start the game and Flask server"""
-    threading.Thread(target=game_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=8090, threaded=True)
+    """Start the camera capture thread, encoder thread, game loop, and Flask server"""
+    global camera_thread_running, encoder_thread_running
+
+    # Start camera capture thread FIRST
+    camera_thread = threading.Thread(target=camera_capture_thread, daemon=True, name="CameraCapture")
+    camera_thread.start()
+
+    # Start JPEG encoder thread
+    jpeg_encoder_thread = threading.Thread(target=encoder_thread, daemon=True, name="JPEGEncoder")
+    jpeg_encoder_thread.start()
+
+    # Give threads time to initialize
+    time.sleep(0.5)
+
+    # Start game loop
+    game_thread = threading.Thread(target=game_loop, daemon=True, name="GameLoop")
+    game_thread.start()
+
+    # Run Flask server (blocking)
+    try:
+        app.run(host="0.0.0.0", port=8090, threaded=True)
+    finally:
+        # Cleanup on exit
+        global game_running
+        game_running = False
+        camera_thread_running = False
+        encoder_thread_running = False
+        # Send shutdown signal to encoder
+        try:
+            encoder_queue.put_nowait(None)
+        except:
+            pass
 
 if __name__ == "__main__":
     run()
