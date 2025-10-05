@@ -1,36 +1,61 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Activity, Cpu, HardDrive, Thermometer, Clock, Gamepad2 } from 'lucide-react';
 
 export default function GameStreamMonitor() {
   const [activeStream, setActiveStream] = useState(1);
+  const [piMetrics, setPiMetrics] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  // Placeholder data for Stream 1
-  const stream1Data = {
-    videoUrl: 'https://www.youtube.com/watch?v=uZkaJ3e9nfY',
-    fps: 144,
-    frameTime: 6.9,
-    gpuUtilization: 78,
-    cpuUtilization: 45,
-    temperature: 72,
-    memoryUsage: 8.4,
-    diskLoad: 12,
-    inputLatency: 3.2
+  // Fetch real-time metrics from Pi via proxy
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        const response = await fetch('/api/metrics');
+        const data = await response.json();
+        setPiMetrics(data);
+        setLoading(false);
+      } catch (error) {
+        console.error('Failed to fetch Pi metrics:', error);
+        setLoading(false);
+      }
+    };
+
+    // Fetch metrics immediately
+    fetchMetrics();
+
+    // Set up polling every 1 second
+    const interval = setInterval(fetchMetrics, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Toggle delegate setting on Pi via proxy
+  const toggleDelegate = async () => {
+    try {
+      const newState = !piMetrics?.delegate_enabled;
+      await fetch(`/api/control/delegate?enable=${newState}`, {
+        method: 'POST'
+      });
+      // Metrics will update automatically via polling
+    } catch (error) {
+      console.error('Failed to toggle delegate:', error);
+    }
   };
 
-  // Placeholder data for Stream 2
-  const stream2Data = {
-    videoUrl: 'https://via.placeholder.com/1280x720/2e1a1a/eee?text=Stream+2',
-    fps: 120,
-    frameTime: 8.3,
-    gpuUtilization: 82,
-    cpuUtilization: 52,
-    temperature: 75,
-    memoryUsage: 9.1,
-    diskLoad: 15,
-    inputLatency: 4.1
+  // Stream configuration
+  const currentStream = {
+    videoUrl: '/api/stream',
+    fps: piMetrics?.fps || 0,
+    frameTime: piMetrics?.fps ? (1000 / piMetrics.fps).toFixed(1) : 0,
+    temperature: piMetrics?.cpu_temp_c || 0,
+    memoryUsage: piMetrics?.mem_used_mb ? (piMetrics.mem_used_mb / 1024).toFixed(1) : 0,
+    inferenceTime: piMetrics?.infer_ms || 0,
+    gameScore: piMetrics?.game_score || 0,
+    gameMissed: piMetrics?.game_missed || 0,
+    gameFruits: piMetrics?.game_fruits || 0,
+    modelName: piMetrics?.model_name || 'Loading...',
+    delegateEnabled: piMetrics?.delegate_enabled || false
   };
-
-  const currentStream = activeStream === 1 ? stream1Data : stream2Data;
 
   const MetricCard = ({ icon: Icon, label, value, unit, color }) => (
     <div style={{
@@ -71,24 +96,34 @@ export default function GameStreamMonitor() {
           <p style={{ color: '#9ca3af' }}>Real-time performance metrics and video streams</p>
         </div>
         <button
-          onClick={() => setActiveStream(activeStream === 1 ? 2 : 1)}
+          onClick={toggleDelegate}
+          disabled={loading}
           style={{
-            backgroundColor: '#2563eb',
+            backgroundColor: currentStream.delegateEnabled ? '#dc2626' : '#059669',
             padding: '0.75rem 1.5rem',
             borderRadius: '0.5rem',
             fontWeight: '600',
             border: 'none',
-            cursor: 'pointer',
+            cursor: loading ? 'not-allowed' : 'pointer',
             display: 'flex',
             alignItems: 'center',
             gap: '0.5rem',
-            color: 'white'
+            color: 'white',
+            opacity: loading ? 0.7 : 1
           }}
-          onMouseOver={(e) => e.target.style.backgroundColor = '#1d4ed8'}
-          onMouseOut={(e) => e.target.style.backgroundColor = '#2563eb'}
+          onMouseOver={(e) => {
+            if (!loading) {
+              e.target.style.backgroundColor = currentStream.delegateEnabled ? '#b91c1c' : '#047857';
+            }
+          }}
+          onMouseOut={(e) => {
+            if (!loading) {
+              e.target.style.backgroundColor = currentStream.delegateEnabled ? '#dc2626' : '#059669';
+            }
+          }}
         >
           <Gamepad2 style={{ width: '1.25rem', height: '1.25rem' }} />
-          {activeStream === 1 ? "Baseline" : "ARM Optimized"}
+          {loading ? 'Loading...' : (currentStream.delegateEnabled ? 'ARM Optimized' : 'Baseline')}
         </button>
       </div>
 
@@ -106,60 +141,60 @@ export default function GameStreamMonitor() {
               Performance Metrics
             </h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <MetricCard 
-                icon={Activity} 
-                label="FPS" 
-                value={currentStream.fps} 
+              <MetricCard
+                icon={Activity}
+                label="FPS"
+                value={currentStream.fps}
                 unit="fps"
                 color="#22c55e"
               />
-              <MetricCard 
-                icon={Clock} 
-                label="Frame Time" 
-                value={currentStream.frameTime} 
+              <MetricCard
+                icon={Clock}
+                label="Frame Time"
+                value={currentStream.frameTime}
                 unit="ms"
                 color="#3b82f6"
               />
-              <MetricCard 
-                icon={Activity} 
-                label="GPU Usage" 
-                value={currentStream.gpuUtilization} 
-                unit="%"
+              <MetricCard
+                icon={Clock}
+                label="Inference Time"
+                value={currentStream.inferenceTime}
+                unit="ms"
                 color="#a855f7"
               />
-              <MetricCard 
-                icon={Cpu} 
-                label="CPU Usage" 
-                value={currentStream.cpuUtilization} 
-                unit="%"
-                color="#eab308"
-              />
-              <MetricCard 
-                icon={Thermometer} 
-                label="Temperature" 
-                value={currentStream.temperature} 
+              <MetricCard
+                icon={Thermometer}
+                label="Temperature"
+                value={currentStream.temperature}
                 unit="°C"
                 color="#ef4444"
               />
-              <MetricCard 
-                icon={Activity} 
-                label="Memory Usage" 
-                value={currentStream.memoryUsage} 
+              <MetricCard
+                icon={HardDrive}
+                label="Memory Usage"
+                value={currentStream.memoryUsage}
                 unit="GB"
                 color="#06b6d4"
               />
-              <MetricCard 
-                icon={HardDrive} 
-                label="Disk Load" 
-                value={currentStream.diskLoad} 
-                unit="%"
+              <MetricCard
+                icon={Gamepad2}
+                label="Game Score"
+                value={currentStream.gameScore}
+                unit="pts"
+                color="#22c55e"
+              />
+              <MetricCard
+                icon={Activity}
+                label="Fruits Active"
+                value={currentStream.gameFruits}
+                unit=""
                 color="#f97316"
               />
-              <MetricCard 
-                icon={Gamepad2} 
-                label="Input Latency" 
-                value={currentStream.inputLatency} 
-                unit="ms"
+              <MetricCard
+                icon={Activity}
+                label="Missed"
+                value={currentStream.gameMissed}
+                unit=""
                 color="#ec4899"
               />
             </div>
@@ -174,13 +209,20 @@ export default function GameStreamMonitor() {
             padding: '1rem',
             border: '1px solid #374151'
           }}>
-            <div style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              justifyContent: 'space-between', 
-              marginBottom: '1rem' 
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '1rem'
             }}>
-              <h2 style={{ fontSize: '1.25rem', fontWeight: '600' }}>{activeStream === 1 ? "Baseline" : "ARM Optimized"}</h2>
+              <div>
+                <h2 style={{ fontSize: '1.25rem', fontWeight: '600' }}>
+                  Fruit Ninja AR - {currentStream.delegateEnabled ? 'ARM Optimized' : 'Baseline'}
+                </h2>
+                <p style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
+                  Model: {currentStream.modelName}
+                </p>
+              </div>
               <span style={{
                 padding: '0.25rem 0.75rem',
                 backgroundColor: '#dc2626',
@@ -205,13 +247,51 @@ export default function GameStreamMonitor() {
               aspectRatio: '16/9',
               backgroundColor: '#111827',
               borderRadius: '0.5rem',
-              overflow: 'hidden'
+              overflow: 'hidden',
+              border: '1px solid #374151'
             }}>
-              <img 
-                src={currentStream.videoUrl} 
-                alt={`Stream ${activeStream}`}
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
+              {loading ? (
+                <div style={{
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#9ca3af'
+                }}>
+                  Loading stream...
+                </div>
+              ) : (
+                <img
+                  src={currentStream.videoUrl}
+                  alt="Fruit Ninja AR Stream"
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    backgroundColor: '#000'
+                  }}
+                  onError={(e) => {
+                    e.target.style.display = 'none';
+                    e.target.nextSibling.style.display = 'flex';
+                  }}
+                />
+              )}
+              <div style={{
+                width: '100%',
+                height: '100%',
+                display: 'none',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#ef4444',
+                flexDirection: 'column',
+                gap: '0.5rem'
+              }}>
+                <p>Stream Offline</p>
+                <p style={{ fontSize: '0.875rem', color: '#9ca3af' }}>
+                  Check Pi connection
+                </p>
+              </div>
             </div>
           </div>
         </div>
