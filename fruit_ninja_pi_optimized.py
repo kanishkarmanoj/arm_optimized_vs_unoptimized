@@ -259,7 +259,7 @@ def draw_rounded_rect(frame, x, y, width, height, radius, color, thickness=-1):
 
 class Button:
     """Interactive button for menu/pause screens with dwell/hover activation"""
-    def __init__(self, x, y, width, height, text, font_scale=0.8, dwell_time=1.5):
+    def __init__(self, x, y, width, height, text, font_scale=0.8, dwell_time=1.0):
         self.x = x
         self.y = y
         self.width = width
@@ -268,7 +268,7 @@ class Button:
         self.font_scale = font_scale
         self.is_hovered_state = False
         self.hover_start_time = None  # When hover started
-        self.dwell_time = dwell_time  # Seconds required to activate
+        self.dwell_time = dwell_time  # Seconds required to activate (1.0s for responsive UX)
         self.activated = False  # Whether button was activated this frame
 
     def is_hovered(self, pos):
@@ -322,18 +322,26 @@ class Button:
         # Draw rounded border
         draw_rounded_rect(frame, self.x, self.y, self.width, self.height, 10, border_color, 2)
 
-        # Draw dwell progress indicator (OPTIMIZED: simple filled circle instead of arc)
+        # Draw dwell progress indicator - ENHANCED for better visibility
         if self.is_hovered_state and hover_progress > 0 and hover_progress < 1.0:
-            # Draw progress as growing circle (much faster than ellipse arc)
-            center_x = self.x + self.width // 2
-            center_y = self.y + self.height // 2
-            max_radius = 8
-            current_radius = int(max_radius * hover_progress)
+            # Progress bar at bottom of button (more visible than small circle)
+            bar_height = 4
+            bar_width = int((self.width - 20) * hover_progress)
+            bar_x = self.x + 10
+            bar_y = self.y + self.height - 10
 
-            if current_radius > 0:
-                # Draw growing circle indicator at top-right corner of button
-                cv2.circle(frame, (self.x + self.width - 15, self.y + 15),
-                          current_radius, YELLOW, -1)
+            # Background bar (gray)
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + self.width - 20, bar_y + bar_height),
+                         (80, 80, 80), -1)
+            # Progress bar (yellow)
+            if bar_width > 0:
+                cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height),
+                             YELLOW, -1)
+
+            # Also show small pulsing circle indicator at top-right
+            pulse_size = 6 + int(2 * math.sin(time.time() * 8))  # Pulsing effect
+            cv2.circle(frame, (self.x + self.width - 15, self.y + 15),
+                      pulse_size, YELLOW, -1)
 
         # Draw text (centered)
         text_size = cv2.getTextSize(self.text, cv2.FONT_HERSHEY_SIMPLEX,
@@ -812,7 +820,7 @@ def draw_menu(frame, hand_pos, is_pinching):
     button_activated = start_button.draw(frame, hand_pos, is_pinching)
 
     # Instructions (updated for both modes)
-    inst_text = "Hover to select (or pinch)"
+    inst_text = "Hover for 1 second to activate (or pinch)"
     inst_size = cv2.getTextSize(inst_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
     inst_x = (DISPLAY_WIDTH - inst_size[0]) // 2
     cv2.putText(frame, inst_text, (inst_x, DISPLAY_HEIGHT - 40),
@@ -841,7 +849,7 @@ def draw_pause_overlay(frame, hand_pos, is_pinching):
     button_activated = menu_button.draw(frame, hand_pos, is_pinching)
 
     # Resume instruction
-    resume_text = "Move hand away to resume"
+    resume_text = "Hover 1s on button (or move away to resume)"
     resume_size = cv2.getTextSize(resume_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
     resume_x = (DISPLAY_WIDTH - resume_size[0]) // 2
     cv2.putText(frame, resume_text, (resume_x, DISPLAY_HEIGHT - 40),
