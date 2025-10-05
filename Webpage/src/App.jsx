@@ -5,6 +5,7 @@ export default function GameStreamMonitor() {
   const [activeStream, setActiveStream] = useState(1);
   const [piMetrics, setPiMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [switching, setSwitching] = useState(false);
 
   // Fetch real-time metrics from Pi via proxy
   useEffect(() => {
@@ -30,7 +31,10 @@ export default function GameStreamMonitor() {
   }, []);
 
   // Toggle delegate mode (1: Baseline, 2: ARM Optimized)
+  // Shows loading spinner during 6-second service restart
   const setMode = async (mode) => {
+    setSwitching(true);  // Show loading spinner
+
     try {
       if (mode === 1) {
         // Mode 1: Baseline - disable delegate
@@ -39,9 +43,13 @@ export default function GameStreamMonitor() {
         // Mode 2: ARM Optimized - enable delegate
         await fetch(`/api/control/delegate?enable=true`, { method: 'POST' });
       }
-      // Metrics will update automatically via polling - NO SERVICE RESTART NEEDED!
+
+      // Wait 6 seconds for service to restart and stabilize
+      await new Promise(resolve => setTimeout(resolve, 6000));
     } catch (error) {
       console.error('Failed to set mode:', error);
+    } finally {
+      setSwitching(false);  // Hide loading spinner
     }
   };
 
@@ -109,44 +117,44 @@ export default function GameStreamMonitor() {
         <div style={{ display: 'flex', gap: '1rem' }}>
           <button
             onClick={() => setMode(1)}
-            disabled={loading}
+            disabled={loading || switching}
             style={{
               backgroundColor: getCurrentMode() === 1 ? '#dc2626' : '#374151',
               padding: '1rem 1.75rem',
               borderRadius: '0.5rem',
               fontWeight: '600',
               border: getCurrentMode() === 1 ? '2px solid #fca5a5' : '2px solid transparent',
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: (loading || switching) ? 'not-allowed' : 'pointer',
               color: 'white',
-              opacity: loading ? 0.7 : 1,
+              opacity: (loading || switching) ? 0.5 : 1,
               transition: 'all 0.2s',
               fontSize: '1rem'
             }}
           >
             <div style={{ fontSize: '0.75rem', opacity: 0.8, marginBottom: '0.25rem' }}>MODE 1</div>
-            <div style={{ fontSize: '1.1rem' }}>Baseline</div>
-            <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>~6 FPS</div>
+            <div style={{ fontSize: '1.1rem' }}>Baseline (SLOW)</div>
+            <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>~4 FPS</div>
           </button>
 
           <button
             onClick={() => setMode(2)}
-            disabled={loading}
+            disabled={loading || switching}
             style={{
               backgroundColor: getCurrentMode() === 2 ? '#059669' : '#374151',
               padding: '1rem 1.75rem',
               borderRadius: '0.5rem',
               fontWeight: '600',
               border: getCurrentMode() === 2 ? '2px solid #6ee7b7' : '2px solid transparent',
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: (loading || switching) ? 'not-allowed' : 'pointer',
               color: 'white',
-              opacity: loading ? 0.7 : 1,
+              opacity: (loading || switching) ? 0.5 : 1,
               transition: 'all 0.2s',
               fontSize: '1rem'
             }}
           >
             <div style={{ fontSize: '0.75rem', opacity: 0.8, marginBottom: '0.25rem' }}>MODE 2</div>
             <div style={{ fontSize: '1.1rem' }}>ARM Optimized ⚡</div>
-            <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>~16 FPS (3x faster!)</div>
+            <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>~20 FPS (5-6x faster!)</div>
           </button>
         </div>
       </div>
@@ -340,6 +348,44 @@ export default function GameStreamMonitor() {
         </div>
       </div>
 
+      {/* Loading Spinner Overlay During Mode Switching */}
+      {switching && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.85)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          flexDirection: 'column',
+          gap: '1.5rem'
+        }}>
+          <div style={{
+            width: '80px',
+            height: '80px',
+            border: '6px solid #374151',
+            borderTop: '6px solid #22c55e',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite'
+          }}></div>
+          <div style={{ textAlign: 'center' }}>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '0.5rem', color: 'white' }}>
+              Switching Modes...
+            </h2>
+            <p style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
+              Restarting service with new configuration
+            </p>
+            <p style={{ color: '#6b7280', fontSize: '0.75rem', marginTop: '0.5rem' }}>
+              This takes ~6 seconds to ensure clean performance comparison
+            </p>
+          </div>
+        </div>
+      )}
+
       <style>{`
         @keyframes pulse {
           0%, 100% {
@@ -347,6 +393,15 @@ export default function GameStreamMonitor() {
           }
           50% {
             opacity: 0.5;
+          }
+        }
+
+        @keyframes spin {
+          0% {
+            transform: rotate(0deg);
+          }
+          100% {
+            transform: rotate(360deg);
           }
         }
       `}</style>
