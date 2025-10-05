@@ -21,6 +21,8 @@ import mediapipe as mp
 os.environ['OMP_NUM_THREADS'] = '4'  # OpenMP threads
 os.environ['TF_NUM_INTRAOP_THREADS'] = '4'  # TensorFlow intra-op parallelism
 os.environ['TF_NUM_INTEROP_THREADS'] = '2'  # TensorFlow inter-op parallelism
+os.environ['XNNPACK_FORCE_PTHREADPOOL_PARALLELISM'] = '1'  # Force XNNPACK multi-threading
+os.environ['XNNPACK_NUM_THREADS'] = '4'  # XNNPACK thread pool size
 cv2.setUseOptimized(True)
 cv2.setNumThreads(4)
 
@@ -643,7 +645,12 @@ def game_loop():
                 pass
             last_metrics_time = time.time()
 
-        # No artificial FPS limiting - let it run at maximum speed
+        # FPS limiter: Lock to 30 FPS for smooth, consistent performance
+        target_frame_time = 1.0 / 30.0  # 33.3ms per frame
+        elapsed = time.time() - t0
+        sleep_time = target_frame_time - elapsed
+        if sleep_time > 0:
+            time.sleep(sleep_time)
 
 def run():
     """Start the camera capture thread, encoder thread, game loop, and Flask server"""
