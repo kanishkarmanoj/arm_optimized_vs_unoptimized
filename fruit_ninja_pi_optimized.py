@@ -52,13 +52,13 @@ optimized_hands_detector = mp_hands.Hands(
 DISPLAY_WIDTH = 640
 DISPLAY_HEIGHT = 360
 
-# Detection resolution - DRAMATIC DIFFERENCE for clear demo
-# Baseline: FULL camera resolution + heavy model = VERY SLOW (target 3-5 FPS)
-# ARM Optimized: TINY resolution + lite model = VERY FAST (target 20-24 FPS)
-BASELINE_DETECTION_WIDTH = 640   # Baseline: FULL resolution (4x more pixels than before!)
-BASELINE_DETECTION_HEIGHT = 360
-OPTIMIZED_DETECTION_WIDTH = 160  # ARM Optimized: TINY resolution (12x fewer pixels!)
-OPTIMIZED_DETECTION_HEIGHT = 120
+# Detection resolution - baseline worse, ARM optimized at ORIGINAL working settings
+# Baseline: Higher resolution + heavy model = SLOW
+# ARM Optimized: Original working resolution + lite model = FAST
+BASELINE_DETECTION_WIDTH = 480   # Baseline: Higher resolution (slower)
+BASELINE_DETECTION_HEIGHT = 270
+OPTIMIZED_DETECTION_WIDTH = 320  # ARM Optimized: ORIGINAL working resolution (keep it working!)
+OPTIMIZED_DETECTION_HEIGHT = 180
 
 FPS_TARGET = 30
 FRUIT_SIZE = 50  # Scaled down for 640x360
@@ -1053,23 +1053,23 @@ def game_loop():
 
         # Use MediaPipe with DIFFERENT detector instances and optimizations
         if delegate_enabled:
-            # ARM OPTIMIZED MODE:
+            # ARM OPTIMIZED MODE (original working settings):
             # - LITE detector (complexity=0)
-            # - TINY resolution (160x120)
+            # - Original working resolution (320x180)
             # - 4x frame skipping + interpolation
             # - NO artificial delay
-            # Target: 20-24 FPS
+            # Target: 14-18 FPS
             hand_pos, thumb_pos, is_pinching, hand_landmarks = detect_hand_mediapipe(detection_frame, use_optimization=True)
         else:
-            # BASELINE MODE (INTENTIONALLY SLOW FOR DRAMATIC DEMO):
+            # BASELINE MODE (slower for comparison):
             # - FULL detector (complexity=1) - heavier model
-            # - FULL resolution (640x360) - 12x more pixels!
+            # - Higher resolution (480x270) - more pixels than optimized
             # - NO frame skipping (process every frame)
-            # - BIG artificial delay (25ms)
-            # Target: 3-5 FPS
+            # - Small artificial delay
+            # Target: 6-8 FPS
             hand_pos, thumb_pos, is_pinching, hand_landmarks = detect_hand_mediapipe(detection_frame, use_optimization=False)
-            # Add BIGGER artificial delay for dramatic performance difference
-            time.sleep(0.025)  # 25ms delay = max 40 FPS theoretical (before other processing)
+            # Small delay to emphasize difference
+            time.sleep(0.010)  # 10ms delay (reduced from 25ms)
 
         infer_ms = (time.time() - infer_start) * 1000.0
 
