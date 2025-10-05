@@ -115,26 +115,34 @@ def load_assets():
     """Load and resize all fruit and sword images"""
     global fruit_images, sword_image
 
-    # Load fruit images (whole and cut versions)
-    fruit_types = ["apple", "orange", "watermelon"]
+    # Load fruit images (whole, halves, and splash versions)
+    fruit_types = ["apple", "banana", "watermelon"]  # banana replaces orange
     for fruit_type in fruit_types:
         # Load whole fruit
         whole_path = os.path.join(ASSETS_PATH, f"{fruit_type}.png")
-        cut_path = os.path.join(ASSETS_PATH, f"{fruit_type}_cut.png")
+        half1_path = os.path.join(ASSETS_PATH, f"{fruit_type}_half_1.png")
+        half2_path = os.path.join(ASSETS_PATH, f"{fruit_type}_half_2.png")
+        splash_path = os.path.join(ASSETS_PATH, f"{fruit_type}_splash.png")
 
         whole_img = cv2.imread(whole_path, cv2.IMREAD_UNCHANGED)
-        cut_img = cv2.imread(cut_path, cv2.IMREAD_UNCHANGED)
+        half1_img = cv2.imread(half1_path, cv2.IMREAD_UNCHANGED)
+        half2_img = cv2.imread(half2_path, cv2.IMREAD_UNCHANGED)
+        splash_img = cv2.imread(splash_path, cv2.IMREAD_UNCHANGED)
 
-        if whole_img is not None and cut_img is not None:
+        if all(img is not None for img in [whole_img, half1_img, half2_img, splash_img]):
             # Resize to appropriate size (fruits are ~80px for better visibility)
             whole_img = cv2.resize(whole_img, (80, 80))
-            cut_img = cv2.resize(cut_img, (80, 80))
+            half1_img = cv2.resize(half1_img, (60, 60))  # Halves are smaller
+            half2_img = cv2.resize(half2_img, (60, 60))
+            splash_img = cv2.resize(splash_img, (100, 100))  # Splash is bigger
 
             fruit_images[fruit_type] = {
                 "whole": whole_img,
-                "cut": cut_img
+                "half_1": half1_img,
+                "half_2": half2_img,
+                "splash": splash_img
             }
-            print(f"✓ Loaded {fruit_type} images")
+            print(f"✓ Loaded {fruit_type} images (whole, halves, splash)")
         else:
             print(f"⚠️  Failed to load {fruit_type} images")
 
@@ -435,11 +443,15 @@ class Fruit:
         self.velocity_x = random.randint(-4, 4)
         self.gravity = 0.8
         self.sliced = False
-        self.fruit_type = random.choice(["apple", "orange", "watermelon"])
+        self.fruit_type = random.choice(["apple", "banana", "watermelon"])  # banana replaces orange
         self.size = 80  # Match image size
         self.rotation = 0
         self.rotation_speed = random.randint(-5, 5)
         self.slice_timer = 0  # Timer for showing cut animation
+
+        # Half positions for slice animation (initialized when sliced)
+        self.half1_offset_x = 0
+        self.half2_offset_x = 0
 
     def update(self):
         if not self.sliced:
@@ -451,9 +463,14 @@ class Fruit:
             if self.y > DISPLAY_HEIGHT + 100:
                 return True
         else:
-            # Sliced fruit animation - show cut version briefly
+            # Sliced fruit animation - show halves flying apart
             self.slice_timer += 1
-            if self.slice_timer > 3:  # Show for 3 frames
+
+            # Halves fly apart horizontally
+            self.half1_offset_x -= 3  # Left half moves left
+            self.half2_offset_x += 3  # Right half moves right
+
+            if self.slice_timer > 10:  # Show for 10 frames
                 return True
         return False
 
@@ -463,15 +480,32 @@ class Fruit:
         # Select image based on sliced state
         if self.fruit_type in fruit_images:
             if self.sliced:
-                img = fruit_images[self.fruit_type]["cut"]
-            else:
-                img = fruit_images[self.fruit_type]["whole"]
+                # Show splash effect in background (first 3 frames)
+                if self.slice_timer <= 3:
+                    splash_img = fruit_images[self.fruit_type]["splash"]
+                    splash_x = int(self.x) - 50  # Center splash (100px / 2)
+                    splash_y = int(self.y) - 50
+                    overlay_png(frame, splash_img, splash_x, splash_y)
 
-            # Overlay PNG with transparency
-            overlay_png(frame, img, int(self.x) - self.size//2, int(self.y) - self.size//2)
+                # Show both halves flying apart
+                half1_img = fruit_images[self.fruit_type]["half_1"]
+                half2_img = fruit_images[self.fruit_type]["half_2"]
+
+                # Position halves with offset (60px / 2 = 30)
+                half1_x = int(self.x + self.half1_offset_x) - 30
+                half1_y = int(self.y) - 30
+                half2_x = int(self.x + self.half2_offset_x) - 30
+                half2_y = int(self.y) - 30
+
+                overlay_png(frame, half1_img, half1_x, half1_y)
+                overlay_png(frame, half2_img, half2_x, half2_y)
+            else:
+                # Show whole fruit
+                img = fruit_images[self.fruit_type]["whole"]
+                overlay_png(frame, img, int(self.x) - self.size//2, int(self.y) - self.size//2)
         else:
             # Fallback to colored circle if image not loaded
-            color_map = {"apple": RED, "orange": ORANGE, "watermelon": GREEN}
+            color_map = {"apple": RED, "banana": YELLOW, "watermelon": GREEN}
             color = color_map.get(self.fruit_type, RED)
             cv2.circle(frame, (int(self.x), int(self.y)), self.size // 2, color, -1)
 
@@ -744,7 +778,7 @@ def detect_slice(hand_pos, fruits):
                         score_popups.append(ScorePopup(fruit.x, fruit.y, points, is_combo))
 
                         # Enhanced particles with fruit color (OPTIMIZED: reduced count)
-                        color_map = {"apple": RED, "orange": ORANGE, "watermelon": GREEN}
+                        color_map = {"apple": RED, "banana": YELLOW, "watermelon": GREEN}
                         particle_color = color_map.get(fruit.fruit_type, RED)
                         # Reduced particle count for performance
                         particle_count = 20 if combo_count > 2 else 15
