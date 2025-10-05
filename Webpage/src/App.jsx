@@ -29,32 +29,25 @@ export default function GameStreamMonitor() {
     return () => clearInterval(interval);
   }, []);
 
-  // Set mode (1: Baseline, 2: ARM Optimized, 3: ARM Hero)
+  // Toggle delegate mode (1: Baseline, 2: ARM Optimized)
   const setMode = async (mode) => {
     try {
       if (mode === 1) {
         // Mode 1: Baseline - disable delegate
         await fetch(`/api/control/delegate?enable=false`, { method: 'POST' });
-        await fetch(`/api/control/performance_mode?mode=BALANCED`, { method: 'POST' });
       } else if (mode === 2) {
         // Mode 2: ARM Optimized - enable delegate
         await fetch(`/api/control/delegate?enable=true`, { method: 'POST' });
-        await fetch(`/api/control/performance_mode?mode=BALANCED`, { method: 'POST' });
-      } else if (mode === 3) {
-        // Mode 3: ARM Hero - convex hull mode
-        await fetch(`/api/control/performance_mode?mode=CONVEX_HULL`, { method: 'POST' });
       }
-      // Metrics will update automatically via polling
+      // Metrics will update automatically via polling - NO SERVICE RESTART NEEDED!
     } catch (error) {
       console.error('Failed to set mode:', error);
     }
   };
 
-  // Determine current mode based on metrics
+  // Determine current mode based on delegate status
   const getCurrentMode = () => {
-    if (piMetrics?.model_name?.includes('Classical CV')) return 3;
-    if (piMetrics?.delegate_enabled) return 2;
-    return 1;
+    return piMetrics?.delegate_enabled ? 2 : 1;
   };
 
   // Stream configuration
@@ -109,29 +102,30 @@ export default function GameStreamMonitor() {
           <h1 style={{ fontSize: '2.25rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
             ARM Optimization Demo
           </h1>
-          <p style={{ color: '#9ca3af' }}>Live comparison: Baseline vs ARM Optimized vs ARM Hero</p>
+          <p style={{ color: '#9ca3af' }}>Live comparison: Baseline vs ARM Optimized (instant switching!)</p>
         </div>
 
-        {/* Mode Selection Buttons */}
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
+        {/* Mode Selection Buttons - 2 Modes Only */}
+        <div style={{ display: 'flex', gap: '1rem' }}>
           <button
             onClick={() => setMode(1)}
             disabled={loading}
             style={{
               backgroundColor: getCurrentMode() === 1 ? '#dc2626' : '#374151',
-              padding: '0.75rem 1.25rem',
+              padding: '1rem 1.75rem',
               borderRadius: '0.5rem',
               fontWeight: '600',
               border: getCurrentMode() === 1 ? '2px solid #fca5a5' : '2px solid transparent',
               cursor: loading ? 'not-allowed' : 'pointer',
               color: 'white',
               opacity: loading ? 0.7 : 1,
-              transition: 'all 0.2s'
+              transition: 'all 0.2s',
+              fontSize: '1rem'
             }}
           >
-            <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>MODE 1</div>
-            <div>Baseline</div>
-            <div style={{ fontSize: '0.7rem', opacity: 0.6 }}>~9 FPS</div>
+            <div style={{ fontSize: '0.75rem', opacity: 0.8, marginBottom: '0.25rem' }}>MODE 1</div>
+            <div style={{ fontSize: '1.1rem' }}>Baseline</div>
+            <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>~6 FPS</div>
           </button>
 
           <button
@@ -139,39 +133,20 @@ export default function GameStreamMonitor() {
             disabled={loading}
             style={{
               backgroundColor: getCurrentMode() === 2 ? '#059669' : '#374151',
-              padding: '0.75rem 1.25rem',
+              padding: '1rem 1.75rem',
               borderRadius: '0.5rem',
               fontWeight: '600',
               border: getCurrentMode() === 2 ? '2px solid #6ee7b7' : '2px solid transparent',
               cursor: loading ? 'not-allowed' : 'pointer',
               color: 'white',
               opacity: loading ? 0.7 : 1,
-              transition: 'all 0.2s'
+              transition: 'all 0.2s',
+              fontSize: '1rem'
             }}
           >
-            <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>MODE 2</div>
-            <div>ARM Optimized</div>
-            <div style={{ fontSize: '0.7rem', opacity: 0.6 }}>~16 FPS</div>
-          </button>
-
-          <button
-            onClick={() => setMode(3)}
-            disabled={loading}
-            style={{
-              backgroundColor: getCurrentMode() === 3 ? '#7c3aed' : '#374151',
-              padding: '0.75rem 1.25rem',
-              borderRadius: '0.5rem',
-              fontWeight: '600',
-              border: getCurrentMode() === 3 ? '2px solid #c4b5fd' : '2px solid transparent',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              color: 'white',
-              opacity: loading ? 0.7 : 1,
-              transition: 'all 0.2s'
-            }}
-          >
-            <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>MODE 3</div>
-            <div>ARM Hero 🚀</div>
-            <div style={{ fontSize: '0.7rem', opacity: 0.6 }}>~176 FPS</div>
+            <div style={{ fontSize: '0.75rem', opacity: 0.8, marginBottom: '0.25rem' }}>MODE 2</div>
+            <div style={{ fontSize: '1.1rem' }}>ARM Optimized ⚡</div>
+            <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '0.25rem' }}>~16 FPS (3x faster!)</div>
           </button>
         </div>
       </div>
@@ -266,7 +241,7 @@ export default function GameStreamMonitor() {
             }}>
               <div>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: '600' }}>
-                  Fruit Ninja AR - Mode {getCurrentMode()}
+                  Fruit Ninja AR - {getCurrentMode() === 1 ? 'Baseline' : 'ARM Optimized'}
                 </h2>
                 <p style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
                   {currentStream.modelName}

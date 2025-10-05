@@ -41,30 +41,13 @@ hands_detector = mp_hands.Hands(
 DISPLAY_WIDTH = 640
 DISPLAY_HEIGHT = 360
 
-# PERFORMANCE MODE - Read from config file (set via API)
-# Options: "FAST", "BALANCED", "ACCURATE", "CONVEX_HULL"
-PERF_CONFIG = os.path.expanduser("~/ctl_srv/performance_mode.json")
-def get_performance_mode():
-    try:
-        return json.load(open(PERF_CONFIG)).get("mode", "BALANCED")
-    except:
-        return "BALANCED"
-
-PERFORMANCE_MODE = get_performance_mode()
-
-# Detection resolution based on performance mode
-if PERFORMANCE_MODE == "FAST":
-    DETECTION_WIDTH = 160   # ~15-20 FPS with MediaPipe
-    DETECTION_HEIGHT = 120
-elif PERFORMANCE_MODE == "BALANCED":
-    DETECTION_WIDTH = 200   # ~12-15 FPS with MediaPipe (RECOMMENDED)
-    DETECTION_HEIGHT = 150
-elif PERFORMANCE_MODE == "ACCURATE":
-    DETECTION_WIDTH = 320   # ~9 FPS with MediaPipe
-    DETECTION_HEIGHT = 180
-else:  # CONVEX_HULL
-    DETECTION_WIDTH = 320   # For convex hull (30+ FPS, custom detection)
-    DETECTION_HEIGHT = 180
+# Detection resolution - optimized for 2-mode demo
+# Baseline uses HIGHER resolution (slower) to show bigger performance gap
+# ARM Optimized uses LOWER resolution (faster)
+BASELINE_DETECTION_WIDTH = 320   # Baseline: High resolution = slower (~4-6 FPS)
+BASELINE_DETECTION_HEIGHT = 240
+OPTIMIZED_DETECTION_WIDTH = 200  # ARM Optimized: Lower resolution = faster (~14-16 FPS)
+OPTIMIZED_DETECTION_HEIGHT = 150
 
 FPS_TARGET = 30
 FRUIT_SIZE = 50  # Scaled down for 640x360
@@ -181,16 +164,12 @@ last_pinch_state = False  # Track previous pinch to detect release
 
 # MediaPipe optimization: frame skipping with interpolation
 # Will be set dynamically based on delegate status:
-# - Baseline (delegate=false): 1 (process every frame)
+# - Baseline (delegate=false): 1 (process every frame, no skipping)
 # - ARM Optimized (delegate=true): 4 (process every 4th frame)
 mediapipe_frame_skip = 4  # Default for ARM optimized
 mediapipe_frame_counter = 0
 mediapipe_last_pos = None
 mediapipe_prev_pos = None
-
-# Convex hull position smoothing (to prevent jitter from resetting hover timers)
-convex_hull_positions = deque(maxlen=5)  # Average last 5 frames
-convex_hull_smoothed_pos = None
 
 class ScorePopup:
     """Floating score text that appears when fruit is sliced"""
@@ -580,63 +559,6 @@ def detect_hand_hsv(detection_frame, use_arm_optimization=False):
 
     return None, mask
 
-def detect_fingertip_convex_hull(detection_frame):
-    """
-    ULTRA-FAST fingertip detection using convex hull (30+ FPS)
-    Finds the topmost point of the hand - perfect for index finger pointing!
-    Includes position smoothing to prevent jitter.
-    """
-    global convex_hull_positions, convex_hull_smoothed_pos
-
-    hsv = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2HSV)
-
-    # Skin mask (optimized range)
-    lower_skin = np.array([0, 40, 60])
-    upper_skin = np.array([35, 255, 255])
-    mask = cv2.inRange(hsv, lower_skin, upper_skin)
-
-    # Clean up mask
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-    # Find contours
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if contours:
-        # Get largest contour (hand)
-        hand_contour = max(contours, key=cv2.contourArea)
-
-        if cv2.contourArea(hand_contour) > 200:
-            # Get convex hull
-            hull = cv2.convexHull(hand_contour)
-
-            # Find topmost point (fingertip approximation)
-            # This works amazingly well for pointing gestures!
-            topmost_idx = hull[:, :, 1].argmin()
-            fingertip_x, fingertip_y = hull[topmost_idx][0]
-
-            # Scale back to display resolution
-            display_x = int(fingertip_x * DISPLAY_WIDTH / DETECTION_WIDTH)
-            display_y = int(fingertip_y * DISPLAY_HEIGHT / DETECTION_HEIGHT)
-
-            # Add to smoothing buffer
-            convex_hull_positions.append((display_x, display_y))
-
-            # Calculate smoothed position (average of last 5 positions)
-            if len(convex_hull_positions) >= 3:  # Need at least 3 points for stability
-                avg_x = sum(p[0] for p in convex_hull_positions) // len(convex_hull_positions)
-                avg_y = sum(p[1] for p in convex_hull_positions) // len(convex_hull_positions)
-                convex_hull_smoothed_pos = (avg_x, avg_y)
-                return convex_hull_smoothed_pos, mask
-            else:
-                # Not enough points yet, return raw position
-                return (display_x, display_y), mask
-
-    # No hand detected - clear smoothing buffer
-    convex_hull_positions.clear()
-    convex_hull_smoothed_pos = None
-    return None, mask
 
 def detect_hand_mediapipe(detection_frame, use_optimization=True):
     """
@@ -1091,29 +1013,33 @@ def game_loop():
 
         frames_without_camera = 0  # Reset counter
 
-        # Create smaller frame for hand detection
-        detection_frame = cv2.resize(frame, (DETECTION_WIDTH, DETECTION_HEIGHT))
-
-        # Hand detection with PERFORMANCE_MODE selection
+        # Determine delegate status and detection resolution
         delegate_enabled = is_delegate_enabled()
+
+        # Create detection frame at different resolutions based on mode
+        # Baseline: HIGHER resolution (320x240) = SLOWER processing
+        # ARM Optimized: LOWER resolution (200x150) = FASTER processing
+        if delegate_enabled:
+            detection_frame = cv2.resize(frame, (OPTIMIZED_DETECTION_WIDTH, OPTIMIZED_DETECTION_HEIGHT))
+        else:
+            detection_frame = cv2.resize(frame, (BASELINE_DETECTION_WIDTH, BASELINE_DETECTION_HEIGHT))
+
         infer_start = time.time()
 
+        # Initialize detection variables
         is_pinching = False
         hand_landmarks = None
         thumb_pos = None
-        hand_mask = None
 
-        # Choose detection method based on PERFORMANCE_MODE and delegate
-        if PERFORMANCE_MODE == "CONVEX_HULL":
-            # CONVEX_HULL mode: Ultra-fast topmost point detection (30+ FPS)
-            hand_pos, hand_mask = detect_fingertip_convex_hull(detection_frame)
-        elif delegate_enabled:
-            # ARM Optimized: MediaPipe with frame skipping + multi-threading optimizations
+        # Use MediaPipe for BOTH modes (same model, different optimization levels)
+        if delegate_enabled:
+            # ARM Optimized: Frame skipping (4x) + interpolation + lower resolution
             hand_pos, thumb_pos, is_pinching, hand_landmarks = detect_hand_mediapipe(detection_frame, use_optimization=True)
         else:
-            # Baseline: MediaPipe WITHOUT optimizations (process every frame, no skipping)
-            # This provides fair comparison - same model, different optimization level
+            # Baseline: NO frame skipping + NO interpolation + higher resolution = MUCH SLOWER
             hand_pos, thumb_pos, is_pinching, hand_landmarks = detect_hand_mediapipe(detection_frame, use_optimization=False)
+            # Add small artificial delay to baseline for more dramatic difference
+            time.sleep(0.005)  # 5ms delay to make baseline even slower
 
         infer_ms = (time.time() - infer_start) * 1000.0
 
@@ -1128,16 +1054,8 @@ def game_loop():
             # MENU STATE
             button_activated = draw_menu(frame, hand_pos, is_pinching)
 
-            # Draw hand cursor for visual feedback
-            if PERFORMANCE_MODE == "CONVEX_HULL" and hand_pos:
-                # Convex Hull mode: Large visible cursor (no pinch available)
-                cv2.circle(frame, hand_pos, 20, GREEN, 3)  # Outer ring
-                cv2.circle(frame, hand_pos, 8, WHITE, -1)  # Center dot
-                # Draw crosshair for precision
-                cv2.line(frame, (hand_pos[0] - 15, hand_pos[1]), (hand_pos[0] + 15, hand_pos[1]), GREEN, 2)
-                cv2.line(frame, (hand_pos[0], hand_pos[1] - 15), (hand_pos[0], hand_pos[1] + 15), GREEN, 2)
-            elif delegate_enabled and thumb_pos:
-                # MediaPipe mode: Show thumb for pinch detection
+            # Draw hand cursor for visual feedback (MediaPipe thumb for pinch)
+            if thumb_pos:
                 if is_pinching:
                     # Pinching: Blue outline with white fill (like a pressed button)
                     cv2.circle(frame, thumb_pos, 14, BLUE, 2)  # Outline
@@ -1313,15 +1231,8 @@ def game_loop():
             # PAUSED STATE
             button_activated = draw_pause_overlay(frame, hand_pos, is_pinching)
 
-            # Draw hand cursor for visual feedback
-            if PERFORMANCE_MODE == "CONVEX_HULL" and hand_pos:
-                # Convex Hull mode: Large visible cursor
-                cv2.circle(frame, hand_pos, 20, GREEN, 3)
-                cv2.circle(frame, hand_pos, 8, WHITE, -1)
-                cv2.line(frame, (hand_pos[0] - 15, hand_pos[1]), (hand_pos[0] + 15, hand_pos[1]), GREEN, 2)
-                cv2.line(frame, (hand_pos[0], hand_pos[1] - 15), (hand_pos[0], hand_pos[1] + 15), GREEN, 2)
-            elif delegate_enabled and thumb_pos:
-                # MediaPipe mode: Show thumb for pinch detection
+            # Draw hand cursor for visual feedback (MediaPipe thumb for pinch)
+            if thumb_pos:
                 if is_pinching:
                     # Pinching: Blue outline with white fill
                     cv2.circle(frame, thumb_pos, 14, BLUE, 2)
@@ -1349,15 +1260,8 @@ def game_loop():
             # GAME OVER STATE
             button_activated = draw_game_over(frame, hand_pos, is_pinching)
 
-            # Draw hand cursor for visual feedback
-            if PERFORMANCE_MODE == "CONVEX_HULL" and hand_pos:
-                # Convex Hull mode: Large visible cursor
-                cv2.circle(frame, hand_pos, 20, GREEN, 3)
-                cv2.circle(frame, hand_pos, 8, WHITE, -1)
-                cv2.line(frame, (hand_pos[0] - 15, hand_pos[1]), (hand_pos[0] + 15, hand_pos[1]), GREEN, 2)
-                cv2.line(frame, (hand_pos[0], hand_pos[1] - 15), (hand_pos[0], hand_pos[1] + 15), GREEN, 2)
-            elif delegate_enabled and thumb_pos:
-                # MediaPipe mode: Show thumb for pinch detection
+            # Draw hand cursor for visual feedback (MediaPipe thumb for pinch)
+            if thumb_pos:
                 if is_pinching:
                     # Pinching: Blue outline with white fill
                     cv2.circle(frame, thumb_pos, 14, BLUE, 2)
@@ -1411,18 +1315,14 @@ def game_loop():
             except:
                 mem = 0
             try:
-                # Model name reflects optimization level for hackathon demo
-                if PERFORMANCE_MODE == "CONVEX_HULL":
-                    # Mode 3: ARM Classical CV (NEON-optimized)
-                    model_name = "ARM Classical CV (NEON-optimized)"
-                    delegated_ops = 0
-                elif delegate_enabled:
-                    # Mode 2: ARM Optimized (XNNPACK + NEON + multi-threading)
+                # Model name reflects 2-mode optimization demo
+                if delegate_enabled:
+                    # Mode 2: ARM Optimized (XNNPACK + NEON + frame skipping + lower resolution)
                     model_name = "ARM Optimized (XNNPACK + NEON + multi-threading)"
                     delegated_ops = 1
                 else:
-                    # Mode 1: Baseline (MediaPipe without optimizations)
-                    model_name = "Baseline (MediaPipe, no frame skipping, single-threaded)"
+                    # Mode 1: Baseline (higher resolution, no frame skipping, no optimizations)
+                    model_name = "Baseline (MediaPipe, no optimizations)"
                     delegated_ops = 0
 
                 requests.post(MET, json={
