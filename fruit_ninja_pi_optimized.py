@@ -1292,10 +1292,10 @@ def game_loop():
             draw_rounded_rect(frame, 5, 5, 250, 75, 10, (100, 100, 100), 2)
 
             # Score with gold color
-            cv2.putText(frame, f"Score: {score}", (15, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, YELLOW, 2)
+            cv2.putText(frame, f"Score: {score}", (35, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, YELLOW, 2)
 
             # Hearts/Lives system (replace "Missed" counter)
-            heart_x_start = 15
+            heart_x_start = 35
             heart_y = 55
             for i in range(MAX_MISSES):
                 filled = i >= missed  # Heart is filled if not yet missed
